@@ -1,0 +1,23 @@
+# 推送到 main 分支后自动部署到服务器（需先在仓库 Settings → Secrets 里填 SSH_HOST / SSH_USER / SSH_KEY）
+name: Deploy
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      HAS_KEY: ${{ secrets.SSH_KEY != '' }}
+    steps:
+      - name: Skip (secrets not set)
+        if: env.HAS_KEY != 'true'
+        run: echo "未配置 SSH 密钥，跳过自动部署。"
+      - name: Deploy over SSH
+        if: env.HAS_KEY == 'true'
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: bash ~/da-site/deploy/update.sh
