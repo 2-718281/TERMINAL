@@ -1,10 +1,10 @@
 // 管理注册授权名单
-//   node deploy/allow.js                 查看名单
-//   node deploy/allow.js DA-0417 DA-0418 添加
-//   node deploy/allow.js --remove DA-0417 移除
+//   node allow.js                 查看名单
+//   node allow.js DA-0417 DA-0418 添加
+//   node allow.js --remove DA-0417 移除
 const Database = require('better-sqlite3');
 const path = require('path');
-const db = new Database(path.join(__dirname, '..', 'data.db'));
+const db = new Database(path.join(__dirname, 'data.db'));
 db.exec('create table if not exists allowed_ids(id text primary key)');
 
 const args = process.argv.slice(2);

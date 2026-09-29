@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# 首次安装：在服务器上执行  bash ~/da-site/deploy/setup.sh
+# 首次安装：在服务器上执行  bash ~/TERMINAL/setup.sh
 set -e
-APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+APP_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo ">> [1/4] 安装系统组件"
 sudo apt-get update -y

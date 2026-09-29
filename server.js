@@ -32,7 +32,8 @@ const bad = (res, msg, code = 400) => res.status(code).json({ error: msg });
 
 const app = express();
 app.use(express.json({ limit: '5mb' }));
-app.use(express.static(path.join(__dirname, 'public')));
+const INDEX = [path.join(__dirname, 'public', 'index.html'), path.join(__dirname, 'index.html')].find(f => require('fs').existsSync(f));
+app.get(['/', '/index.html'], (req, res) => INDEX ? res.sendFile(INDEX) : res.status(404).send('index.html not found'));
 const api = express.Router();
 
 function auth(req, res, next) {
