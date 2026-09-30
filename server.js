@@ -47,6 +47,7 @@ addCol('users', 'titles', "text default '[]'");
 addCol('users', 'idcard', "text default ''");
 addCol('users', 'age', "text default ''");
 addCol('posts', 'images', "text default ''");
+addCol('comments', 'reply_to', "text default ''");
 addCol('announcements', 'body', "text default ''");
 addCol('announcements', 'author', "text default ''");
 db.exec(`update users set position = case when id in (${ADMINS.map(a => `'${a}'`).join(',')}) then '部长' else '员工' end where position is null or position = ''`);
@@ -135,7 +136,7 @@ function postOut(p, me) {
   const liked = !!db.prepare('select 1 from likes where post_id = ? and user_id = ?').get(p.id, me);
   const reported = !!db.prepare('select 1 from reports where post_id = ? and user_id = ?').get(p.id, me);
   const faved = !!db.prepare('select 1 from favs where post_id = ? and user_id = ?').get(p.id, me);
-  const comments = db.prepare('select c.author, coalesce(u.name, c.author) name, c.text, c.created_at createdAt from comments c left join users u on u.id = c.author where c.post_id = ? order by c.id').all(p.id);
+  const comments = db.prepare('select c.id, c.author, coalesce(u.name, c.author) name, c.text, c.created_at createdAt, c.reply_to replyTo, coalesce(r.name, c.reply_to) replyName from comments c left join users u on u.id = c.author left join users r on r.id = c.reply_to where c.post_id = ? order by c.id').all(p.id);
   return { id: p.id, author: p.author, authorName: a ? a.name : p.author, authorAvatar: a ? a.avatar || '' : '', authorBadge: a ? pub(a).badgeName : '', text: p.text, image: p.image || '', images: postImages(p), createdAt: p.created_at, likeCount, liked, reported, faved, comments };
 }
 const annList = () => db.prepare('select id, title, body, date, author from announcements order by id desc limit 20').all();
@@ -237,12 +238,21 @@ api.post('/posts/:id/like', auth, (req, res) => {
   if (!del.changes) db.prepare('insert into likes values(?, ?)').run(p.id, req.user.id);
   res.json({ post: postOut(p, req.user.id) });
 });
+api.delete('/posts/:id/comments/:cid', auth, (req, res) => {
+  const p = getPost(+req.params.id); if (!p) return bad(res, '帖子不存在', 404);
+  const c = db.prepare('select * from comments where id = ? and post_id = ?').get(+req.params.cid, p.id); if (!c) return bad(res, '评论不存在', 404);
+  if (c.author !== req.user.id && p.author !== req.user.id && !isAdmin(req.user.id)) return bad(res, '无权删除', 403);
+  db.prepare('delete from comments where id = ?').run(c.id);
+  res.json({ post: postOut(p, req.user.id) });
+});
 api.post('/posts/:id/comments', auth, (req, res) => {
   const p = getPost(+req.params.id); if (!p) return bad(res, '帖子不存在', 404);
   const text = str(req.body.text, 200); if (!text) return bad(res, '留言为空');
-  db.prepare('insert into comments(post_id, author, text, created_at) values(?, ?, ?, ?)').run(p.id, req.user.id, text, Date.now());
+  const rt = getUser(String(req.body.replyTo || '')) ? String(req.body.replyTo) : '';
+  db.prepare('insert into comments(post_id, author, text, created_at, reply_to) values(?, ?, ?, ?, ?)').run(p.id, req.user.id, text, Date.now(), rt);
   notify(p.author, 'reply', req.user.id, p.id, text);
-  mentionIds(text).filter(id => id !== p.author).forEach(id => notify(id, 'cmention', req.user.id, p.id, text));
+  if (rt && rt !== p.author) notify(rt, 'creply', req.user.id, p.id, text);
+  mentionIds(text).filter(id => id !== p.author && id !== rt).forEach(id => notify(id, 'cmention', req.user.id, p.id, text));
   res.json({ post: postOut(p, req.user.id) });
 });
 api.post('/posts/:id/fav', auth, (req, res) => {
