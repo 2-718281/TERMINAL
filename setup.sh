@@ -4,11 +4,11 @@ set -e
 APP_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo ">> [1/4] 安装系统组件"
-sudo apt-get update -y
-sudo apt-get install -y nginx build-essential curl git
+sudo NEEDRESTART_MODE=a DEBIAN_FRONTEND=noninteractive apt-get update -y
+sudo NEEDRESTART_MODE=a DEBIAN_FRONTEND=noninteractive apt-get install -y nginx build-essential curl git
 if ! command -v node >/dev/null || [ "$(node -v | cut -d. -f1 | tr -d v)" -lt 18 ]; then
   curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-  sudo apt-get install -y nodejs
+  sudo NEEDRESTART_MODE=a DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs
 fi
 sudo npm i -g pm2
 
