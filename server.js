@@ -9,6 +9,8 @@ const PORT = process.env.PORT || 3000;
 const ADMIN_DEPT = { 'DA-1978': '驾驶部', 'DA-0409': '后勤部', 'DA-0042': '研究部' };
 const DEPTS = ['研究部', '驾驶部', '后勤部'];
 const ADMINS = Object.keys(ADMIN_DEPT);
+let ROSTER = {}; try { ROSTER = JSON.parse(require('fs').readFileSync(require('path').join(__dirname, 'roster.json'), 'utf8')); } catch (e) {}
+const presetDept = id => ADMIN_DEPT[id] || (ROSTER[id] && DEPTS.includes(ROSTER[id].dept) ? ROSTER[id].dept : '');
 const T_ = (kind, key, n, name, cond) => ({ kind, key, n, name, cond });
 const TITLES = [
   T_('post', 'p5', 5, '分享生活', '累计发帖 5 条'), T_('post', 'p10', 10, '隔太空喊话', '累计发帖 10 条'),
@@ -49,6 +51,7 @@ addCol('announcements', 'body', "text default ''");
 addCol('announcements', 'author', "text default ''");
 db.exec(`update users set position = case when id in (${ADMINS.map(a => `'${a}'`).join(',')}) then '部长' else '员工' end where position is null or position = ''`);
 ADMINS.forEach(id => db.prepare('insert or ignore into allowed_ids values(?)').run(id));
+Object.keys(ROSTER).forEach(id => db.prepare('insert or ignore into allowed_ids values(?)').run(id));
 db.exec('create table if not exists meta(k text primary key, v text)');
 if (!db.prepare("select 1 from meta where k = 'cleanup_v1'").get()) {
   // 一次性清理：只保留两个管理员账号
@@ -144,7 +147,7 @@ api.post('/auth/check', (req, res) => {
   if (!ID_RE.test(id)) return bad(res, 'ID 需为 3–20 位字母、数字、- 或 _');
   const exists = !!getUser(id);
   if (!exists && !allowed(id)) return bad(res, '该 ID 未在授权名单中', 403);
-  res.json({ exists, fixedDept: ADMIN_DEPT[id] || '' });
+  res.json({ exists, fixedDept: presetDept(id), fixedPos: isAdmin(id) ? '部长' : '员工' });
 });
 api.post('/auth/login', (req, res) => {
   const u = getUser(String(req.body.id || '').toUpperCase());
@@ -152,7 +155,7 @@ api.post('/auth/login', (req, res) => {
   issue(res, u);
 });
 api.post('/auth/register', (req, res) => {
-  const id = String(req.body.id || '').toUpperCase(), pw = String(req.body.password || ''), dept = ADMIN_DEPT[id] || str(req.body.dept, 16);
+  const id = String(req.body.id || '').toUpperCase(), pw = String(req.body.password || ''), dept = presetDept(id) || str(req.body.dept, 16);
   if (!ID_RE.test(id)) return bad(res, 'ID 格式错误');
   if (!DEPTS.includes(dept)) return bad(res, '请选择部门');
   if (pw.length < 6) return bad(res, '密码至少 6 位');
@@ -160,7 +163,7 @@ api.post('/auth/register', (req, res) => {
   if (!allowed(id)) return bad(res, '该 ID 未在授权名单中', 403);
   const salt = crypto.randomBytes(16).toString('hex');
   db.prepare("insert into users(id, salt, hash, name, title, avatar, created_at, dept, position, gender, birthday, badge, titles) values(?, ?, ?, ?, '', '', ?, ?, ?, '', '', 'base', '[]')")
-    .run(id, salt, hashPw(pw, salt).toString('hex'), id, Date.now(), dept, isAdmin(id) ? '部长' : '员工');
+    .run(id, salt, hashPw(pw, salt).toString('hex'), (ROSTER[id] && ROSTER[id].name) || id, Date.now(), dept, isAdmin(id) ? '部长' : '员工');
   issue(res, getUser(id));
 });
 api.get('/me', auth, (req, res) => res.json({ user: self(req.user) }));
