@@ -9,7 +9,8 @@ const PORT = process.env.PORT || 3000;
 const ADMIN_DEPT = { 'DA-1978': '驾驶部', 'DA-0409': '后勤部', 'DA-0042': '研究部' };
 const DEPTS = ['研究部', '驾驶部', '后勤部'];
 const ADMINS = Object.keys(ADMIN_DEPT);
-const TITLES = [5, 10, 20].map(n => ({ key: 'p' + n, n, name: `发帖${n}条称号`, cond: `累计发帖 ${n} 条` }));
+const TITLES = [...[5, 10, 20].map(n => ({ key: 'p' + n, n, kind: 'post', name: `发帖${n}条称号`, cond: `累计发帖 ${n} 条` })),
+  ...[5, 10, 15, 20].map(n => ({ key: 'r' + n, n, kind: 'radio', name: `电台投稿${n}次称号`, cond: `累计电台投稿 ${n} 次` }))];
 
 const db = new Database(path.join(__dirname, 'data.db'));
 db.pragma('journal_mode = WAL');
@@ -91,6 +92,11 @@ function auth(req, res, next) {
 }
 const admin = (req, res, next) => isAdmin(req.user.id) ? next() : bad(res, '需要管理员权限', 403);
 const self = u => ({ ...pub(u), idCard: u.idcard || '' });
+function award(u, kind, n) {
+  const have = owned(u), fresh = TITLES.filter(t => t.kind === kind && n >= t.n && !have.includes(t.key));
+  if (fresh.length) db.prepare('update users set titles = ? where id = ?').run(JSON.stringify([...have, ...fresh.map(t => t.key)]), u.id);
+  return fresh.map(t => ({ name: t.name, cond: t.cond }));
+}
 function issue(res, u) {
   const token = crypto.randomBytes(32).toString('hex');
   db.prepare('insert into sessions values(?, ?, ?)').run(token, u.id, Date.now());
@@ -158,6 +164,10 @@ api.get('/users/:id/posts', auth, (req, res) => {
   res.json({ user: pub(u), posts: db.prepare('select * from posts where author = ? order by id desc').all(u.id).map(p => postOut(p, req.user.id)) });
 });
 
+api.get('/pulse', auth, (req, res) => res.json({
+  post: db.prepare('select coalesce(max(id), 0) n from posts').get().n,
+  ann: db.prepare('select coalesce(max(id), 0) n from announcements').get().n
+}));
 api.get('/announcements', (req, res) => res.json({ items: annList() }));
 api.post('/announcements', auth, admin, (req, res) => {
   const title = str(req.body.title, 60), body = str(req.body.body, 1000);
@@ -178,9 +188,8 @@ api.post('/posts', auth, (req, res) => {
   if (!text && !image) return bad(res, '内容为空');
   if (image && !isImg(image)) return bad(res, '图片格式或大小不支持');
   const r = db.prepare('insert into posts(author, text, image, created_at) values(?, ?, ?, ?)').run(u.id, text, image, Date.now());
-  const n = postCount(u.id), have = owned(u), fresh = TITLES.filter(t => n >= t.n && !have.includes(t.key));
-  if (fresh.length) db.prepare('update users set titles = ? where id = ?').run(JSON.stringify([...have, ...fresh.map(t => t.key)]), u.id);
-  res.json({ post: postOut(getPost(r.lastInsertRowid), u.id), user: self(getUser(u.id)), newTitles: fresh.map(t => ({ name: t.name, cond: t.cond })) });
+  const newTitles = award(u, 'post', postCount(u.id));
+  res.json({ post: postOut(getPost(r.lastInsertRowid), u.id), user: self(getUser(u.id)), newTitles });
 });
 api.delete('/posts/:id', auth, (req, res) => {
   const p = getPost(+req.params.id); if (!p) return bad(res, '帖子不存在', 404);
@@ -226,12 +235,49 @@ api.delete('/admin/reports/:id', auth, admin, (req, res) => {
 });
 
 // ---- 电台 ----
-const RADIO_TYPES = { say: '我想说', sing: '在宇宙歌唱', song: '歌曲分享' };
+const RADIO_TYPES = { say: '我想说', sing: 'K歌', song: '歌曲分享' };
 const UA = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36' };
 const https_ = u => String(u || '').replace(/^http:\/\//, 'https://');
 async function fetchJson(url, headers) {
   const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 6000);
   try { const r = await fetch(url, { headers: { ...UA, ...headers }, signal: ctl.signal }); return await r.json(); } finally { clearTimeout(to); }
+}
+const BILI_H = { Referer: 'https://www.bilibili.com/', Cookie: 'buvid3=' + crypto.randomUUID() + 'infoc' };
+async function fetchText(url, headers) {
+  const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 6000);
+  try { const r = await fetch(url, { headers: { ...UA, ...headers }, signal: ctl.signal }); return await r.text(); } finally { clearTimeout(to); }
+}
+const cleanPic = u => https_(String(u || '').replace(/^\/\//, 'https://').replace(/@.*$/, ''));
+async function neteaseMeta(id) {
+  const out = {};
+  try {
+    const j = await fetchJson(`https://music.163.com/api/song/detail/?id=${id}&ids=%5B${id}%5D`, { Referer: 'https://music.163.com/' });
+    const s = j && j.songs && j.songs[0];
+    if (s) Object.assign(out, { title: s.name || '', artist: (s.artists || []).map(a => a.name).join(' / '), cover: https_(s.album && s.album.picUrl), duration: Math.round((s.duration || 0) / 1000) });
+  } catch (e) {}
+  return out;
+}
+async function biliMeta(bvid) {
+  const out = {};
+  try {
+    const j = await fetchJson(`https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`, BILI_H);
+    const d = j && j.code === 0 && j.data;
+    if (d) Object.assign(out, { title: d.title || '', artist: (d.owner && d.owner.name) || '', cover: cleanPic(d.pic), duration: d.duration || 0 });
+  } catch (e) {}
+  if (!out.duration) {
+    try { const j = await fetchJson(`https://api.bilibili.com/x/player/pagelist?bvid=${bvid}`, BILI_H); if (j && j.code === 0 && j.data && j.data[0]) out.duration = j.data[0].duration || 0; } catch (e) {}
+  }
+  if (!out.cover || !out.title || !out.duration) {
+    try {
+      const h = await fetchText(`https://www.bilibili.com/video/${bvid}/`, BILI_H);
+      const pick = re => { const m = h.match(re); return m ? m[1] : ''; };
+      if (!out.cover) out.cover = cleanPic(pick(/<meta[^>]+(?:property="og:image"|itemprop="image")[^>]+content="([^"]+)"/));
+      if (!out.title) out.title = pick(/<meta[^>]+property="og:title"[^>]+content="([^"]+)"/).replace(/_哔哩哔哩.*$/, '');
+      if (!out.artist) out.artist = pick(/<meta[^>]+name="author"[^>]+content="([^"]+)"/);
+      if (!out.duration) out.duration = +pick(/"duration":(\d+)/) || 0;
+    } catch (e) {}
+  }
+  return out;
 }
 async function resolveLink(raw) {
   let url = (String(raw || '').match(/https?:\/\/[^\s\u3000]+/) || [''])[0];
@@ -240,25 +286,24 @@ async function resolveLink(raw) {
     try { const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 6000); const r = await fetch(url, { headers: UA, redirect: 'follow', signal: ctl.signal }); clearTimeout(to); url = r.url || url; } catch (e) {}
   }
   let m;
-  if (/music\.163\.com/.test(url) && ((m = url.match(/song\S*?[?&]id=(\d+)/)) || (m = url.match(/song\/(\d+)/)))) {
-    const out = { platform: 'netease', mediaId: m[1], title: '', artist: '', cover: '', duration: 0, link: url };
-    try {
-      const j = await fetchJson(`https://music.163.com/api/song/detail/?id=${m[1]}&ids=%5B${m[1]}%5D`, { Referer: 'https://music.163.com/' });
-      const s = j && j.songs && j.songs[0];
-      if (s) Object.assign(out, { title: s.name || '', artist: (s.artists || []).map(a => a.name).join(' / '), cover: https_(s.album && s.album.picUrl), duration: Math.round((s.duration || 0) / 1000) });
-    } catch (e) {}
-    return out;
-  }
-  if (/bilibili\.com|b23\.tv/.test(url) && (m = url.match(/BV[0-9A-Za-z]{10}/))) {
-    const out = { platform: 'bili', mediaId: m[0], title: '', artist: '', cover: '', duration: 0, link: url };
-    try {
-      const j = await fetchJson(`https://api.bilibili.com/x/web-interface/view?bvid=${m[0]}`, { Referer: 'https://www.bilibili.com/' });
-      const d = j && j.code === 0 && j.data;
-      if (d) Object.assign(out, { title: d.title || '', artist: (d.owner && d.owner.name) || '', cover: https_(d.pic), duration: d.duration || 0 });
-    } catch (e) {}
-    return out;
-  }
+  if (/music\.163\.com/.test(url) && ((m = url.match(/song\S*?[?&]id=(\d+)/)) || (m = url.match(/song\/(\d+)/))))
+    return { platform: 'netease', mediaId: m[1], title: '', artist: '', cover: '', duration: 0, link: url, ...(await neteaseMeta(m[1])) };
+  if (/bilibili\.com|b23\.tv/.test(url) && (m = url.match(/BV[0-9A-Za-z]{10}/)))
+    return { platform: 'bili', mediaId: m[0], title: '', artist: '', cover: '', duration: 0, link: url, ...(await biliMeta(m[0])) };
   return null;
+}
+// 补全之前没取到的封面/时长
+async function fillMeta(rows) {
+  const miss = rows.filter(r => r.platform && (!r.duration || !r.cover)).slice(0, 5);
+  await Promise.all(miss.map(async r => {
+    const m = r.platform === 'bili' ? await biliMeta(r.media_id) : await neteaseMeta(r.media_id);
+    const nr = { title: r.title || m.title || '', artist: r.artist || m.artist || '', cover: r.cover || m.cover || '', duration: r.duration || m.duration || 0 };
+    if (nr.cover !== r.cover || nr.duration !== r.duration || nr.title !== r.title) {
+      db.prepare('update radio set title = ?, artist = ?, cover = ?, duration = ? where id = ?').run(nr.title, nr.artist, nr.cover, nr.duration, r.id);
+      Object.assign(r, nr);
+    }
+  }));
+  return rows;
 }
 function radioOut(r, me) {
   const a = getUser(r.author), see = !r.anon || r.author === me || isAdmin(me);
@@ -267,8 +312,8 @@ function radioOut(r, me) {
     text: r.text || '', image: r.image || '', link: r.link || '', platform: r.platform || '', mediaId: r.media_id || '', title: r.title || '', artist: r.artist || '', cover: r.cover || '', duration: r.duration || 0,
     day: r.day, createdAt: r.created_at, mine: r.author === me };
 }
-api.get('/radio/today', auth, (req, res) => res.json({ day: today(), items: db.prepare('select * from radio where day = ? order by id').all(today()).map(r => radioOut(r, req.user.id)) }));
-api.get('/radio/past', auth, (req, res) => res.json({ items: db.prepare('select * from radio order by id desc limit 200').all().map(r => radioOut(r, req.user.id)) }));
+api.get('/radio/today', auth, async (req, res) => { const rows = await fillMeta(db.prepare('select * from radio where day = ? order by id').all(today())); res.json({ day: today(), items: rows.map(r => radioOut(r, req.user.id)) }); });
+api.get('/radio/past', auth, async (req, res) => { const rows = await fillMeta(db.prepare('select * from radio order by id desc limit 200').all()); res.json({ items: rows.map(r => radioOut(r, req.user.id)) }); });
 api.post('/radio', auth, async (req, res) => {
   const b = req.body, type = RADIO_TYPES[b.type] ? b.type : '', text = str(b.text, 500), image = b.image || '';
   if (!type) return bad(res, '请选择投稿类型');
@@ -281,7 +326,8 @@ api.post('/radio', auth, async (req, res) => {
   const m = media || {};
   const r = db.prepare('insert into radio(author, anon, type, text, image, link, platform, media_id, title, artist, cover, duration, day, created_at) values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
     .run(req.user.id, b.anon ? 1 : 0, type, text, image, m.link || '', m.platform || '', m.mediaId || '', m.title || '', m.artist || '', m.cover || '', m.duration || 0, today(), Date.now());
-  res.json({ item: radioOut(db.prepare('select * from radio where id = ?').get(r.lastInsertRowid), req.user.id) });
+  const newTitles = award(req.user, 'radio', db.prepare('select count(*) n from radio where author = ?').get(req.user.id).n);
+  res.json({ item: radioOut(db.prepare('select * from radio where id = ?').get(r.lastInsertRowid), req.user.id), user: self(getUser(req.user.id)), newTitles });
 });
 api.delete('/radio/:id', auth, (req, res) => {
   const r = db.prepare('select * from radio where id = ?').get(+req.params.id); if (!r) return bad(res, '投稿不存在', 404);
