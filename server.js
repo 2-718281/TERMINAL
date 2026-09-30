@@ -19,7 +19,8 @@ const TITLES = [
   T_('radio', 'r5', 5, '爱听', '累计电台投稿 5 次'), T_('radio', 'r10', 10, '听听你的', '累计电台投稿 10 次'),
   T_('radio', 'r15', 15, '广播全是你', '累计电台投稿 15 次'), T_('radio', 'r20', 20, '点歌王', '累计电台投稿 20 次'),
   T_('sing', 'k5', 5, 'K歌大王', '累计电台 K歌投稿 5 次'), T_('sing', 'k10', 10, '麦霸', '累计电台 K歌投稿 10 次'),
-  T_('fav', 'f20', 20, '收藏家', '累计收藏 20 条帖子')
+  T_('fav', 'f20', 20, '收藏家', '累计收藏 20 条帖子'),
+  T_('secret', 'm1', 0, '月之暗面', ''), T_('secret', 'm2', 0, '1:4:9', '')
 ];
 
 const db = new Database(path.join(__dirname, 'data.db'));
@@ -157,6 +158,7 @@ const postCount = id => db.prepare('select count(*) n from posts where author = 
 const app = express();
 app.use(express.json({ limit: '12mb' }));
 app.use((req, res, next) => { try { convertBody(req.body, 0); } catch (e) {} next(); });
+app.use('/moon', express.static(path.join(__dirname, 'moon'), { maxAge: '1h' }));
 app.use('/media', express.static(MEDIA, { immutable: true, maxAge: '365d', index: false, dotfiles: 'deny' }));
 const INDEX = [path.join(__dirname, 'public', 'index.html'), path.join(__dirname, 'index.html')].find(f => fs.existsSync(f));
 app.get(['/', '/index.html'], (req, res) => INDEX ? res.sendFile(INDEX) : res.status(404).send('index.html not found'));
@@ -522,6 +524,15 @@ api.post('/ads', auth, admin, (req, res) => {
 api.delete('/ads/:id', auth, admin, (req, res) => {
   db.prepare('delete from ads where id = ?').run(+req.params.id);
   res.json({ items: db.prepare('select * from ads order by id desc').all().map(adOut) });
+});
+
+// ---- 隐藏成就（由档案里的解谜页面触发）----
+api.post('/achv', auth, (req, res) => {
+  const t = TITLES.find(x => x.kind === 'secret' && x.key === req.body.key); if (!t) return bad(res, '无效');
+  const u = getUser(req.user.id), have = owned(u);
+  if (have.includes(t.key)) return res.json({ user: self(u), newTitles: [] });
+  db.prepare('update users set titles = ? where id = ?').run(JSON.stringify([...have, t.key]), u.id);
+  res.json({ user: self(getUser(u.id)), newTitles: [{ name: t.name, cond: '' }] });
 });
 
 // ---- 错误日志 ----
