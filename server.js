@@ -4,6 +4,7 @@ const Database = require('better-sqlite3');
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 
 const PORT = process.env.PORT || 3000;
 const ADMIN_DEPT = { 'DA-1978': '驾驶部', 'DA-0409': '后勤部', 'DA-0042': '研究部' };
@@ -74,10 +75,71 @@ if (!db.prepare('select count(*) n from announcements').get().n) {
   db.prepare('insert into announcements(title, date, body, author) values(?, ?, ?, ?)').run('社区频道开放 · 观测记录同步中', '2026.09.29', '', '地面控制');
 }
 
+db.exec('create table if not exists errors(id integer primary key autoincrement, t integer, src text, where_ text, user_id text, msg text, stack text)');
+function logError(src, where, err, uid) {
+  try {
+    db.prepare('insert into errors(t, src, where_, user_id, msg, stack) values(?, ?, ?, ?, ?, ?)').run(Date.now(), src, String(where || '').slice(0, 200), uid || '', String((err && err.message) || err || '').slice(0, 500), String((err && err.stack) || '').slice(0, 2000));
+    db.prepare('delete from errors where id <= (select max(id) - 500 from errors)').run();
+  } catch (e) {}
+}
+// 每天北京时间 4 点后自动备份，保留 14 天
+const BK_DIR = path.join(os.homedir(), 'da-backups');
+let lastDaily = '';
+async function dailyBackup() {
+  const bj = new Date(Date.now() + 8 * 3600e3), day = bj.toISOString().slice(0, 10).replace(/-/g, '');
+  if (bj.getUTCHours() < 4 || lastDaily === day) return;
+  const file = path.join(BK_DIR, 'daily-' + day + '.db');
+  if (fs.existsSync(file)) { lastDaily = day; return; }
+  try {
+    fs.mkdirSync(BK_DIR, { recursive: true }); await db.backup(file); lastDaily = day;
+    try { fs.cpSync(MEDIA, path.join(BK_DIR, 'media'), { recursive: true, force: false, errorOnExist: false }); } catch (e) {}
+    fs.readdirSync(BK_DIR).filter(f => /^daily-\d{8}\.db$/.test(f)).sort().reverse().slice(14).forEach(f => fs.unlinkSync(path.join(BK_DIR, f)));
+    console.log('daily backup -> ' + file);
+  } catch (e) { logError('backup', 'dailyBackup', e); }
+}
+setInterval(dailyBackup, 10 * 60e3); setTimeout(dailyBackup, 30e3);
+// 频率限制：每人每分钟最多 5 次（管理员不限）
+const hits = new Map();
+const limit = (kind, max = 5, win = 60e3) => (req, res, next) => {
+  const who = req.user ? req.user.id : req.ip;
+  if (req.user && isAdmin(req.user.id)) return next();
+  const k = kind + ':' + who, now = Date.now(), a = (hits.get(k) || []).filter(t => now - t < win);
+  if (a.length >= max) return bad(res, '操作太频繁，请 ' + Math.ceil((win - (now - a[0])) / 1000) + ' 秒后再试', 429);
+  a.push(now); hits.set(k, a); next();
+};
+setInterval(() => { const now = Date.now(); for (const [k, a] of hits) if (!a.some(t => now - t < 120e3)) hits.delete(k); }, 10 * 60e3);
+
 const ID_RE = /^[A-Z0-9_-]{3,20}$/;
 const MAX_IMG = 2_000_000;
 const hashPw = (pw, salt) => crypto.scryptSync(String(pw), salt, 64);
-const isImg = s => typeof s === 'string' && /^data:image\/(jpeg|png|webp|gif);base64,/.test(s) && s.length < MAX_IMG;
+// ---- 图片单独存放在 media/ 文件夹，数据库只存地址 ----
+const MEDIA = path.join(__dirname, 'media'); fs.mkdirSync(MEDIA, { recursive: true });
+const DATA_RE = /^data:image\/(jpeg|png|webp|gif);base64,/, MEDIA_RE = /^\/media\/[0-9a-f]{40}\.(jpg|png|webp|gif)$/;
+function saveImg(v) {
+  if (typeof v !== 'string' || !DATA_RE.test(v)) return v || '';
+  const m = v.match(/^data:image\/(jpeg|png|webp|gif);base64,(.+)$/); if (!m) return '';
+  const buf = Buffer.from(m[2], 'base64'), ext = m[1] === 'jpeg' ? 'jpg' : m[1];
+  const name = crypto.createHash('sha1').update(buf).digest('hex') + '.' + ext, f = path.join(MEDIA, name);
+  if (!fs.existsSync(f)) fs.writeFileSync(f, buf);
+  return '/media/' + name;
+}
+const isImg = s => typeof s === 'string' && (MEDIA_RE.test(s) || (DATA_RE.test(s) && s.length < MAX_IMG));
+function convertBody(o, depth) {
+  if (depth > 4 || !o || typeof o !== 'object') return;
+  for (const k of Object.keys(o)) { const x = o[k]; if (typeof x === 'string' && DATA_RE.test(x) && x.length < MAX_IMG) o[k] = saveImg(x); else if (x && typeof x === 'object') convertBody(x, depth + 1); }
+}
+if (!db.prepare("select 1 from meta where k = 'img_v1'").get()) {
+  const cv = x => saveImg(x), arr = s => { try { const a = JSON.parse(s || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } };
+  db.transaction(() => {
+    db.prepare('select id, avatar, idcard from users').all().forEach(u => db.prepare('update users set avatar = ?, idcard = ? where id = ?').run(cv(u.avatar), cv(u.idcard), u.id));
+    db.prepare('select id, image, images from posts').all().forEach(p => db.prepare('update posts set image = ?, images = ? where id = ?').run(cv(p.image), JSON.stringify(arr(p.images).map(cv)), p.id));
+    db.prepare('select id, image from radio').all().forEach(r => db.prepare('update radio set image = ? where id = ?').run(cv(r.image), r.id));
+    db.prepare('select id, image from ads').all().forEach(a => db.prepare('update ads set image = ? where id = ?').run(cv(a.image), a.id));
+    db.prepare("insert into meta values('img_v1', ?)").run(String(Date.now()));
+  })();
+  try { db.exec('vacuum'); } catch (e) {}
+  console.log('图片已迁移到 media/');
+}
 const bad = (res, msg, code = 400) => res.status(code).json({ error: msg });
 const isAdmin = id => ADMINS.includes(id);
 const today = () => new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10).replace(/-/g, '.');
@@ -94,8 +156,15 @@ const postCount = id => db.prepare('select count(*) n from posts where author = 
 
 const app = express();
 app.use(express.json({ limit: '12mb' }));
+app.use((req, res, next) => { try { convertBody(req.body, 0); } catch (e) {} next(); });
+app.use('/media', express.static(MEDIA, { immutable: true, maxAge: '365d', index: false, dotfiles: 'deny' }));
 const INDEX = [path.join(__dirname, 'public', 'index.html'), path.join(__dirname, 'index.html')].find(f => fs.existsSync(f));
 app.get(['/', '/index.html'], (req, res) => INDEX ? res.sendFile(INDEX) : res.status(404).send('index.html not found'));
+const STATIC = { '/manifest.webmanifest': 'application/manifest+json', '/sw.js': 'text/javascript', '/icon-192.png': 'image/png', '/icon-512.png': 'image/png', '/apple-touch-icon.png': 'image/png' };
+Object.entries(STATIC).forEach(([u, type]) => app.get(u, (req, res) => {
+  const f = path.join(__dirname, u.slice(1)); if (!fs.existsSync(f)) return res.status(404).end();
+  res.type(type); if (u === '/sw.js') res.set('Cache-Control', 'no-cache'); res.sendFile(f);
+}));
 const api = express.Router();
 
 function auth(req, res, next) {
@@ -212,9 +281,13 @@ api.delete('/announcements/:id', auth, admin, (req, res) => {
 });
 
 api.get('/posts', auth, (req, res) => {
-  res.json({ posts: db.prepare('select * from posts order by id desc limit 100').all().map(p => postOut(p, req.user.id)) });
+  const lim = Math.min(200, Math.max(1, +req.query.limit || 20)), before = +req.query.before || 0, after = +req.query.after || 0;
+  const rows = after ? db.prepare('select * from posts where id > ? order by id desc limit 200').all(after)
+    : db.prepare('select * from posts where (? = 0 or id < ?) order by id desc limit ?').all(before, before, lim);
+  res.json({ posts: rows.map(p => postOut(p, req.user.id)), more: !after && rows.length === lim });
 });
-api.post('/posts', auth, (req, res) => {
+api.get('/posts/:id', auth, (req, res) => { const p = getPost(+req.params.id); if (!p) return bad(res, '帖子不存在', 404); res.json({ post: postOut(p, req.user.id) }); });
+api.post('/posts', auth, limit('post'), (req, res) => {
   const u = req.user, text = str(req.body.text, 500);
   const images = (Array.isArray(req.body.images) ? req.body.images : (req.body.image ? [req.body.image] : [])).filter(Boolean);
   if (images.length > 4) return bad(res, '最多 4 张图片');
@@ -245,7 +318,7 @@ api.delete('/posts/:id/comments/:cid', auth, (req, res) => {
   db.prepare('delete from comments where id = ?').run(c.id);
   res.json({ post: postOut(p, req.user.id) });
 });
-api.post('/posts/:id/comments', auth, (req, res) => {
+api.post('/posts/:id/comments', auth, limit('cmt'), (req, res) => {
   const p = getPost(+req.params.id); if (!p) return bad(res, '帖子不存在', 404);
   const text = str(req.body.text, 200); if (!text) return bad(res, '留言为空');
   const rt = getUser(String(req.body.replyTo || '')) ? String(req.body.replyTo) : '';
@@ -411,7 +484,7 @@ function radioOut(r, me) {
 }
 api.get('/radio/today', auth, async (req, res) => { const rows = await fillMeta(db.prepare('select * from radio where day = ? order by id').all(today())); res.json({ day: today(), items: rows.map(r => radioOut(r, req.user.id)) }); });
 api.get('/radio/past', auth, async (req, res) => { const rows = await fillMeta(db.prepare('select * from radio order by id desc limit 200').all()); res.json({ items: rows.map(r => radioOut(r, req.user.id)) }); });
-api.post('/radio', auth, async (req, res) => {
+api.post('/radio', auth, limit('radio'), async (req, res) => {
   const b = req.body, type = RADIO_TYPES[b.type] ? b.type : '', text = str(b.text, 500), image = b.image || '';
   if (!type) return bad(res, '请选择投稿类型');
   if (image && !isImg(image)) return bad(res, '图片格式或大小不支持');
@@ -451,5 +524,21 @@ api.delete('/ads/:id', auth, admin, (req, res) => {
   res.json({ items: db.prepare('select * from ads order by id desc').all().map(adOut) });
 });
 
+// ---- 错误日志 ----
+api.post('/client-error', limit('cerr', 20), (req, res) => {
+  const b = req.body || {};
+  logError('client', str(b.where, 200), { message: str(b.msg, 500), stack: str(b.stack, 2000) }, str(b.user, 20));
+  res.json({ ok: true });
+});
+api.get('/admin/errors', auth, admin, (req, res) => res.json({ items: db.prepare('select * from errors order by id desc limit 200').all().map(e => ({ id: e.id, t: e.t, src: e.src, where: e.where_, user: e.user_id, msg: e.msg, stack: e.stack })) }));
+api.delete('/admin/errors', auth, admin, (req, res) => { db.prepare('delete from errors').run(); res.json({ items: [] }); });
+
 app.use('/api', api);
+app.use((err, req, res, next) => {
+  logError('server', req.method + ' ' + req.originalUrl, err, req.user && req.user.id);
+  if (res.headersSent) return next(err);
+  res.status(err.status || 500).json({ error: err.type === 'entity.too.large' ? '内容过大' : '服务器内部错误' });
+});
+process.on('uncaughtException', e => { logError('crash', 'uncaughtException', e); console.error(e); });
+process.on('unhandledRejection', e => { logError('crash', 'unhandledRejection', e); console.error(e); });
 app.listen(PORT, () => console.log('DA server on :' + PORT));
