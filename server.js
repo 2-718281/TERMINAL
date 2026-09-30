@@ -9,8 +9,15 @@ const PORT = process.env.PORT || 3000;
 const ADMIN_DEPT = { 'DA-1978': '驾驶部', 'DA-0409': '后勤部', 'DA-0042': '研究部' };
 const DEPTS = ['研究部', '驾驶部', '后勤部'];
 const ADMINS = Object.keys(ADMIN_DEPT);
-const TITLES = [...[5, 10, 20].map(n => ({ key: 'p' + n, n, kind: 'post', name: `发帖${n}条称号`, cond: `累计发帖 ${n} 条` })),
-  ...[5, 10, 15, 20].map(n => ({ key: 'r' + n, n, kind: 'radio', name: `电台投稿${n}次称号`, cond: `累计电台投稿 ${n} 次` }))];
+const T_ = (kind, key, n, name, cond) => ({ kind, key, n, name, cond });
+const TITLES = [
+  T_('post', 'p5', 5, '分享生活', '累计发帖 5 条'), T_('post', 'p10', 10, '隔太空喊话', '累计发帖 10 条'),
+  T_('post', 'p15', 15, '给我好好上班', '累计发帖 15 条'), T_('post', 'p20', 20, '带薪摸鱼', '累计发帖 20 条'),
+  T_('radio', 'r5', 5, '爱听', '累计电台投稿 5 次'), T_('radio', 'r10', 10, '听听你的', '累计电台投稿 10 次'),
+  T_('radio', 'r15', 15, '广播全是你', '累计电台投稿 15 次'), T_('radio', 'r20', 20, '点歌王', '累计电台投稿 20 次'),
+  T_('sing', 'k5', 5, 'K歌大王', '累计电台 K歌投稿 5 次'), T_('sing', 'k10', 10, '麦霸', '累计电台 K歌投稿 10 次'),
+  T_('fav', 'f20', 20, '收藏家', '累计收藏 20 条帖子')
+];
 
 const db = new Database(path.join(__dirname, 'data.db'));
 db.pragma('journal_mode = WAL');
@@ -23,6 +30,9 @@ create table if not exists comments(id integer primary key autoincrement, post_i
 create table if not exists announcements(id integer primary key autoincrement, title text, date text);
 create table if not exists allowed_ids(id text primary key);
 create table if not exists reports(post_id integer, user_id text, reason text, created_at integer, primary key(post_id, user_id));
+create table if not exists favs(post_id integer, user_id text, created_at integer, primary key(post_id, user_id));
+create table if not exists notifs(id integer primary key autoincrement, user_id text, kind text, actor text, post_id integer, text text, created_at integer, read integer default 0);
+create table if not exists ads(id integer primary key autoincrement, text text, image text, link text, created_at integer);
 create table if not exists radio(id integer primary key autoincrement, author text, anon integer, type text, text text, image text, link text, platform text, media_id text, title text, artist text, cover text, duration integer, day text, created_at integer);
 `);
 const addCol = (t, c, def) => { if (!db.prepare(`pragma table_info(${t})`).all().some(r => r.name === c)) db.exec(`alter table ${t} add column ${c} ${def}`); };
@@ -34,6 +44,7 @@ addCol('users', 'badge', "text default 'base'");
 addCol('users', 'titles', "text default '[]'");
 addCol('users', 'idcard', "text default ''");
 addCol('users', 'age', "text default ''");
+addCol('posts', 'images', "text default ''");
 addCol('announcements', 'body', "text default ''");
 addCol('announcements', 'author', "text default ''");
 db.exec(`update users set position = case when id in (${ADMINS.map(a => `'${a}'`).join(',')}) then '部长' else '员工' end where position is null or position = ''`);
@@ -78,7 +89,7 @@ const getPost = id => db.prepare('select * from posts where id = ?').get(id);
 const postCount = id => db.prepare('select count(*) n from posts where author = ?').get(id).n;
 
 const app = express();
-app.use(express.json({ limit: '5mb' }));
+app.use(express.json({ limit: '12mb' }));
 const INDEX = [path.join(__dirname, 'public', 'index.html'), path.join(__dirname, 'index.html')].find(f => fs.existsSync(f));
 app.get(['/', '/index.html'], (req, res) => INDEX ? res.sendFile(INDEX) : res.status(404).send('index.html not found'));
 const api = express.Router();
@@ -92,6 +103,18 @@ function auth(req, res, next) {
 }
 const admin = (req, res, next) => isAdmin(req.user.id) ? next() : bad(res, '需要管理员权限', 403);
 const self = u => ({ ...pub(u), idCard: u.idcard || '' });
+function mentionIds(text) {
+  const out = new Set(), re = /@([^\s@，。,.!！?？:：;；、）)]+)/g; let m;
+  while ((m = re.exec(String(text || '')))) {
+    const t = m[1], u = getUser(t.toUpperCase()) || db.prepare('select * from users where name = ?').get(t);
+    if (u) out.add(u.id);
+  }
+  return [...out];
+}
+function notify(uid, kind, actor, postId, text) {
+  if (!uid || uid === actor) return;
+  db.prepare('insert into notifs(user_id, kind, actor, post_id, text, created_at, read) values(?, ?, ?, ?, ?, ?, 0)').run(uid, kind, actor, postId, String(text || '').slice(0, 200), Date.now());
+}
 function award(u, kind, n) {
   const have = owned(u), fresh = TITLES.filter(t => t.kind === kind && n >= t.n && !have.includes(t.key));
   if (fresh.length) db.prepare('update users set titles = ? where id = ?').run(JSON.stringify([...have, ...fresh.map(t => t.key)]), u.id);
@@ -102,18 +125,20 @@ function issue(res, u) {
   db.prepare('insert into sessions values(?, ?, ?)').run(token, u.id, Date.now());
   res.json({ token, user: self(u) });
 }
+function postImages(p) { try { const a = JSON.parse(p.images || '[]'); if (Array.isArray(a) && a.length) return a; } catch (e) {} return p.image ? [p.image] : []; }
 function postOut(p, me) {
   const a = getUser(p.author);
   const likeCount = db.prepare('select count(*) n from likes where post_id = ?').get(p.id).n;
   const liked = !!db.prepare('select 1 from likes where post_id = ? and user_id = ?').get(p.id, me);
   const reported = !!db.prepare('select 1 from reports where post_id = ? and user_id = ?').get(p.id, me);
+  const faved = !!db.prepare('select 1 from favs where post_id = ? and user_id = ?').get(p.id, me);
   const comments = db.prepare('select c.author, coalesce(u.name, c.author) name, c.text, c.created_at createdAt from comments c left join users u on u.id = c.author where c.post_id = ? order by c.id').all(p.id);
-  return { id: p.id, author: p.author, authorName: a ? a.name : p.author, authorAvatar: a ? a.avatar || '' : '', authorBadge: a ? pub(a).badgeName : '', text: p.text, image: p.image || '', createdAt: p.created_at, likeCount, liked, reported, comments };
+  return { id: p.id, author: p.author, authorName: a ? a.name : p.author, authorAvatar: a ? a.avatar || '' : '', authorBadge: a ? pub(a).badgeName : '', text: p.text, image: p.image || '', images: postImages(p), createdAt: p.created_at, likeCount, liked, reported, faved, comments };
 }
 const annList = () => db.prepare('select id, title, body, date, author from announcements order by id desc limit 20').all();
 const str = (v, n) => typeof v === 'string' ? v.trim().slice(0, n) : '';
 
-api.get('/health', (req, res) => res.json({ app: 'descensus-astrorum', ok: true }));
+api.get('/health', (req, res) => res.json({ app: 'descensus-astrorum', ok: true, now: Date.now() }));
 api.post('/auth/check', (req, res) => {
   const id = String(req.body.id || '').toUpperCase();
   if (!ID_RE.test(id)) return bad(res, 'ID 需为 3–20 位字母、数字、- 或 _');
@@ -165,7 +190,9 @@ api.get('/users/:id/posts', auth, (req, res) => {
 });
 
 api.get('/pulse', auth, (req, res) => res.json({
+  now: Date.now(),
   post: db.prepare('select coalesce(max(id), 0) n from posts').get().n,
+  unread: db.prepare('select count(*) n from notifs where user_id = ? and read = 0').get(req.user.id).n,
   ann: db.prepare('select coalesce(max(id), 0) n from announcements').get().n
 }));
 api.get('/announcements', (req, res) => res.json({ items: annList() }));
@@ -184,17 +211,20 @@ api.get('/posts', auth, (req, res) => {
   res.json({ posts: db.prepare('select * from posts order by id desc limit 100').all().map(p => postOut(p, req.user.id)) });
 });
 api.post('/posts', auth, (req, res) => {
-  const u = req.user, text = str(req.body.text, 500), image = req.body.image || '';
-  if (!text && !image) return bad(res, '内容为空');
-  if (image && !isImg(image)) return bad(res, '图片格式或大小不支持');
-  const r = db.prepare('insert into posts(author, text, image, created_at) values(?, ?, ?, ?)').run(u.id, text, image, Date.now());
+  const u = req.user, text = str(req.body.text, 500);
+  const images = (Array.isArray(req.body.images) ? req.body.images : (req.body.image ? [req.body.image] : [])).filter(Boolean);
+  if (images.length > 4) return bad(res, '最多 4 张图片');
+  if (!text && !images.length) return bad(res, '内容为空');
+  if (images.some(x => !isImg(x))) return bad(res, '图片格式或大小不支持');
+  const r = db.prepare('insert into posts(author, text, image, images, created_at) values(?, ?, ?, ?, ?)').run(u.id, text, images[0] || '', JSON.stringify(images), Date.now());
   const newTitles = award(u, 'post', postCount(u.id));
+  mentionIds(text).forEach(id => notify(id, 'mention', u.id, r.lastInsertRowid, text));
   res.json({ post: postOut(getPost(r.lastInsertRowid), u.id), user: self(getUser(u.id)), newTitles });
 });
 api.delete('/posts/:id', auth, (req, res) => {
   const p = getPost(+req.params.id); if (!p) return bad(res, '帖子不存在', 404);
   if (p.author !== req.user.id && !isAdmin(req.user.id)) return bad(res, '无权删除', 403);
-  ['likes', 'comments', 'reports'].forEach(t => db.prepare(`delete from ${t} where post_id = ?`).run(p.id));
+  ['likes', 'comments', 'reports', 'favs', 'notifs'].forEach(t => db.prepare(`delete from ${t} where post_id = ?`).run(p.id));
   db.prepare('delete from posts where id = ?').run(p.id);
   res.json({ ok: true });
 });
@@ -208,8 +238,29 @@ api.post('/posts/:id/comments', auth, (req, res) => {
   const p = getPost(+req.params.id); if (!p) return bad(res, '帖子不存在', 404);
   const text = str(req.body.text, 200); if (!text) return bad(res, '留言为空');
   db.prepare('insert into comments(post_id, author, text, created_at) values(?, ?, ?, ?)').run(p.id, req.user.id, text, Date.now());
+  notify(p.author, 'reply', req.user.id, p.id, text);
+  mentionIds(text).filter(id => id !== p.author).forEach(id => notify(id, 'cmention', req.user.id, p.id, text));
   res.json({ post: postOut(p, req.user.id) });
 });
+api.post('/posts/:id/fav', auth, (req, res) => {
+  const p = getPost(+req.params.id); if (!p) return bad(res, '帖子不存在', 404);
+  const del = db.prepare('delete from favs where post_id = ? and user_id = ?').run(p.id, req.user.id);
+  let newTitles = [];
+  if (!del.changes) {
+    db.prepare('insert into favs values(?, ?, ?)').run(p.id, req.user.id, Date.now());
+    newTitles = award(req.user, 'fav', db.prepare('select count(*) n from favs where user_id = ?').get(req.user.id).n);
+  }
+  res.json({ post: postOut(p, req.user.id), user: self(getUser(req.user.id)), newTitles });
+});
+api.get('/favs', auth, (req, res) => {
+  res.json({ posts: db.prepare('select p.* from favs f join posts p on p.id = f.post_id where f.user_id = ? order by f.created_at desc').all(req.user.id).map(p => postOut(p, req.user.id)) });
+});
+api.get('/notifs', auth, (req, res) => {
+  const rows = db.prepare('select * from notifs where user_id = ? order by id desc limit 100').all(req.user.id);
+  res.json({ items: rows.map(n => { const a = getUser(n.actor), p = getPost(n.post_id);
+    return { id: n.id, kind: n.kind, actor: n.actor, actorName: a ? a.name : n.actor, actorAvatar: a ? a.avatar || '' : '', postId: n.post_id, postText: p ? (p.text || '（图片）').slice(0, 80) : '（帖子已删除）', postExists: !!p, text: n.text, createdAt: n.created_at, read: !!n.read }; }) });
+});
+api.post('/notifs/read', auth, (req, res) => { db.prepare('update notifs set read = 1 where user_id = ?').run(req.user.id); res.json({ ok: true }); });
 api.post('/posts/:id/report', auth, (req, res) => {
   const p = getPost(+req.params.id); if (!p) return bad(res, '帖子不存在', 404);
   db.prepare('insert or replace into reports values(?, ?, ?, ?)').run(p.id, req.user.id, str(req.body.reason, 200), Date.now());
@@ -221,8 +272,41 @@ api.get('/admin/users', auth, admin, (req, res) => {
 });
 api.patch('/admin/users/:id', auth, admin, (req, res) => {
   const u = getUser(req.params.id); if (!u) return bad(res, '用户不存在', 404);
-  db.prepare('update users set dept = ?, position = ? where id = ?').run(DEPTS.includes(req.body.dept) ? req.body.dept : u.dept, str(req.body.position, 16) || u.position, u.id);
+  const b = req.body;
+  const f = {
+    name: str(b.name, 24) || u.name,
+    gender: ['男', '女', '保密', ''].includes(b.gender) ? b.gender : u.gender,
+    birthday: (b.birthday === '' || /^\d{2}-\d{2}$/.test(b.birthday || '')) ? b.birthday : u.birthday,
+    age: b.age === '' ? '' : (b.age != null && Number.isInteger(+b.age) && +b.age >= 0 && +b.age <= 150) ? String(+b.age) : (u.age || ''),
+    dept: DEPTS.includes(b.dept) ? b.dept : u.dept,
+    position: str(b.position, 16) || u.position,
+    avatar: b.clearAvatar ? '' : u.avatar,
+    idcard: b.clearIdCard ? '' : (u.idcard || ''),
+    titles: Array.isArray(b.titles) ? JSON.stringify([...new Set(b.titles.filter(k => TITLES.some(t => t.key === k)))]) : u.titles,
+    salt: u.salt, hash: u.hash, id: u.id
+  };
+  if (b.password) {
+    if (String(b.password).length < 6) return bad(res, '新密码至少 6 位');
+    f.salt = crypto.randomBytes(16).toString('hex'); f.hash = hashPw(b.password, f.salt).toString('hex');
+    db.prepare('delete from sessions where user_id = ?').run(u.id);
+  }
+  db.prepare('update users set name = @name, gender = @gender, birthday = @birthday, age = @age, dept = @dept, position = @position, avatar = @avatar, idcard = @idcard, titles = @titles, salt = @salt, hash = @hash where id = @id').run(f);
   res.json({ user: pub(getUser(u.id)) });
+});
+api.delete('/admin/users/:id', auth, admin, (req, res) => {
+  const u = getUser(req.params.id); if (!u) return bad(res, '用户不存在', 404);
+  if (isAdmin(u.id)) return bad(res, '不能删除管理员账号', 403);
+  db.transaction(() => {
+    const mine = 'select id from posts where author = @id';
+    db.prepare(`delete from likes where user_id = @id or post_id in (${mine})`).run({ id: u.id });
+    db.prepare(`delete from comments where author = @id or post_id in (${mine})`).run({ id: u.id });
+    db.prepare(`delete from reports where user_id = @id or post_id in (${mine})`).run({ id: u.id });
+    db.prepare(`delete from favs where user_id = @id or post_id in (${mine})`).run({ id: u.id });
+    db.prepare(`delete from notifs where user_id = @id or actor = @id or post_id in (${mine})`).run({ id: u.id });
+    ['posts:author', 'radio:author', 'sessions:user_id', 'users:id'].forEach(x => { const [t, c] = x.split(':'); db.prepare(`delete from ${t} where ${c} = ?`).run(u.id); });
+    if (req.query.revoke === '1') db.prepare('delete from allowed_ids where id = ?').run(u.id);
+  })();
+  res.json({ ok: true });
 });
 api.get('/admin/reports', auth, admin, (req, res) => {
   const rows = db.prepare('select post_id, count(*) n, max(created_at) last from reports group by post_id order by last desc').all();
@@ -326,7 +410,10 @@ api.post('/radio', auth, async (req, res) => {
   const m = media || {};
   const r = db.prepare('insert into radio(author, anon, type, text, image, link, platform, media_id, title, artist, cover, duration, day, created_at) values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
     .run(req.user.id, b.anon ? 1 : 0, type, text, image, m.link || '', m.platform || '', m.mediaId || '', m.title || '', m.artist || '', m.cover || '', m.duration || 0, today(), Date.now());
-  const newTitles = award(req.user, 'radio', db.prepare('select count(*) n from radio where author = ?').get(req.user.id).n);
+  const newTitles = [
+    ...award(req.user, 'radio', db.prepare('select count(*) n from radio where author = ?').get(req.user.id).n),
+    ...(type === 'sing' ? award(getUser(req.user.id), 'sing', db.prepare("select count(*) n from radio where author = ? and type = 'sing'").get(req.user.id).n) : [])
+  ];
   res.json({ item: radioOut(db.prepare('select * from radio where id = ?').get(r.lastInsertRowid), req.user.id), user: self(getUser(req.user.id)), newTitles });
 });
 api.delete('/radio/:id', auth, (req, res) => {
@@ -334,6 +421,21 @@ api.delete('/radio/:id', auth, (req, res) => {
   if (r.author !== req.user.id && !isAdmin(req.user.id)) return bad(res, '无权删除', 403);
   db.prepare('delete from radio where id = ?').run(r.id);
   res.json({ ok: true });
+});
+
+// ---- 广告 ----
+const adOut = a => ({ id: a.id, text: a.text || '', image: a.image || '', link: a.link || '', createdAt: a.created_at });
+api.get('/ads', auth, (req, res) => res.json({ items: db.prepare('select * from ads order by id desc').all().map(adOut) }));
+api.post('/ads', auth, admin, (req, res) => {
+  const text = str(req.body.text, 300), image = req.body.image || '', link = /^https?:\/\//.test(req.body.link || '') ? str(req.body.link, 500) : '';
+  if (!text && !image) return bad(res, '请填写广告内容');
+  if (image && !isImg(image)) return bad(res, '图片格式或大小不支持');
+  db.prepare('insert into ads(text, image, link, created_at) values(?, ?, ?, ?)').run(text, image, link, Date.now());
+  res.json({ items: db.prepare('select * from ads order by id desc').all().map(adOut) });
+});
+api.delete('/ads/:id', auth, admin, (req, res) => {
+  db.prepare('delete from ads where id = ?').run(+req.params.id);
+  res.json({ items: db.prepare('select * from ads order by id desc').all().map(adOut) });
 });
 
 app.use('/api', api);
