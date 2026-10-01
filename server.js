@@ -20,6 +20,9 @@ const TITLES = [
   T_('radio', 'r15', 15, '广播全是你', '累计电台投稿 15 次'), T_('radio', 'r20', 20, '点歌王', '累计电台投稿 20 次'),
   T_('sing', 'k5', 5, 'K歌大王', '累计电台 K歌投稿 5 次'), T_('sing', 'k10', 10, '麦霸', '累计电台 K歌投稿 10 次'),
   T_('fav', 'f20', 20, '收藏家', '累计收藏 20 条帖子'),
+  T_('cmt', 'c5', 5, '你好世界', '累计评论 5 条'), T_('cmt', 'c10', 10, '社交的手腕', '累计评论 10 条'),
+  T_('cmt', 'c15', 15, '人性的秘密', '累计评论 15 条'), T_('cmt', 'c20', 20, '五星评价', '累计评论 20 条'),
+  T_('cmt', 'c30', 30, '评论学家', '累计评论 30 条'), T_('cmt', 'c40', 40, '社交神', '累计评论 40 条'),
   T_('secret', 'm1', 0, '月之暗面', ''), T_('secret', 'm2', 0, '1:4:9', ''), T_('secret', 'o4', 0, '罗摩占陀罗', ''), T_('secret', 'o5', 0, '航线：F_W_S', '据说是一位伟大的船长曾经规划过的航线'),
   T_('orbit', 'o1', 0, '模拟器高手', '航线规划培训 · 达成精确航线'), T_('orbit', 'o2', 0, '完成培训', '航线规划培训 · 完成任务'), T_('orbit', 'o3', 0, '我们要去哪?', '航线规划培训 · 偏离原定计划'),
   T_('ofail', 'of10', 10, '飞船爆破手', '航线模拟失败 10 次'), T_('ofail', 'of20', 20, '舰桥流放者', '航线模拟失败 20 次'), T_('ofail', 'of30', 30, '驾驶部公敌', '航线模拟失败 30 次')
@@ -332,7 +335,10 @@ api.post('/posts/:id/comments', auth, limit('cmt'), (req, res) => {
   notify(p.author, 'reply', req.user.id, p.id, text);
   if (rt && rt !== p.author) notify(rt, 'creply', req.user.id, p.id, text);
   mentionIds(text).filter(id => id !== p.author && id !== rt).forEach(id => notify(id, 'cmention', req.user.id, p.id, text));
-  res.json({ post: postOut(p, req.user.id) });
+  const cu = getUser(req.user.id), have = owned(cu), cn = db.prepare('select count(*) n from comments where author = ?').get(req.user.id).n;
+  const fresh = TITLES.filter(t => t.kind === 'cmt' && cn >= t.n && !have.includes(t.key));
+  if (fresh.length) db.prepare('update users set titles = ? where id = ?').run(JSON.stringify([...have, ...fresh.map(t => t.key)]), cu.id);
+  res.json({ post: postOut(p, req.user.id), user: self(getUser(cu.id)), newTitles: fresh.map(t => ({ name: t.name, cond: t.cond })) });
 });
 api.post('/posts/:id/fav', auth, (req, res) => {
   const p = getPost(+req.params.id); if (!p) return bad(res, '帖子不存在', 404);
