@@ -20,7 +20,9 @@ const TITLES = [
   T_('radio', 'r15', 15, '广播全是你', '累计电台投稿 15 次'), T_('radio', 'r20', 20, '点歌王', '累计电台投稿 20 次'),
   T_('sing', 'k5', 5, 'K歌大王', '累计电台 K歌投稿 5 次'), T_('sing', 'k10', 10, '麦霸', '累计电台 K歌投稿 10 次'),
   T_('fav', 'f20', 20, '收藏家', '累计收藏 20 条帖子'),
-  T_('secret', 'm1', 0, '月之暗面', ''), T_('secret', 'm2', 0, '1:4:9', '')
+  T_('secret', 'm1', 0, '月之暗面', ''), T_('secret', 'm2', 0, '1:4:9', ''), T_('secret', 'o4', 0, '罗摩占陀罗', ''), T_('secret', 'o5', 0, '航线：F_W_S', '据说是一位伟大的船长曾经规划过的航线'),
+  T_('orbit', 'o1', 0, '模拟器高手', '航线规划培训 · 达成精确航线'), T_('orbit', 'o2', 0, '完成培训', '航线规划培训 · 完成任务'), T_('orbit', 'o3', 0, '我们要去哪?', '航线规划培训 · 偏离原定计划'),
+  T_('ofail', 'of10', 10, '飞船爆破手', '航线模拟失败 10 次'), T_('ofail', 'of20', 20, '舰桥流放者', '航线模拟失败 20 次'), T_('ofail', 'of30', 30, '驾驶部公敌', '航线模拟失败 30 次')
 ];
 
 const db = new Database(path.join(__dirname, 'data.db'));
@@ -41,6 +43,7 @@ create table if not exists radio(id integer primary key autoincrement, author te
 `);
 const addCol = (t, c, def) => { if (!db.prepare(`pragma table_info(${t})`).all().some(r => r.name === c)) db.exec(`alter table ${t} add column ${c} ${def}`); };
 addCol('users', 'dept', "text default ''");
+addCol('users', 'orbit_fails', 'integer default 0');
 addCol('users', 'position', "text default ''");
 addCol('users', 'gender', "text default ''");
 addCol('users', 'birthday', "text default ''");
@@ -159,6 +162,7 @@ const app = express();
 app.use(express.json({ limit: '12mb' }));
 app.use((req, res, next) => { try { convertBody(req.body, 0); } catch (e) {} next(); });
 app.use('/moon', express.static(path.join(__dirname, 'moon'), { maxAge: '1h' }));
+app.use('/orbit', express.static(path.join(__dirname, 'orbit'), { maxAge: '1h' }));
 app.use('/media', express.static(MEDIA, { immutable: true, maxAge: '365d', index: false, dotfiles: 'deny' }));
 const INDEX = [path.join(__dirname, 'public', 'index.html'), path.join(__dirname, 'index.html')].find(f => fs.existsSync(f));
 app.get(['/', '/index.html'], (req, res) => INDEX ? res.sendFile(INDEX) : res.status(404).send('index.html not found'));
@@ -526,13 +530,20 @@ api.delete('/ads/:id', auth, admin, (req, res) => {
   res.json({ items: db.prepare('select * from ads order by id desc').all().map(adOut) });
 });
 
-// ---- 隐藏成就（由档案里的解谜页面触发）----
+// ---- 标识牌（由档案里的解谜 / 培训页面触发）----
 api.post('/achv', auth, (req, res) => {
-  const t = TITLES.find(x => x.kind === 'secret' && x.key === req.body.key); if (!t) return bad(res, '无效');
+  if (req.body.key === 'ofail') {
+    db.prepare('update users set orbit_fails = coalesce(orbit_fails, 0) + 1 where id = ?').run(req.user.id);
+    const u = getUser(req.user.id), have = owned(u), n = u.orbit_fails || 0;
+    const fresh = TITLES.filter(t => t.kind === 'ofail' && n >= t.n && !have.includes(t.key));
+    if (fresh.length) db.prepare('update users set titles = ? where id = ?').run(JSON.stringify([...have, ...fresh.map(t => t.key)]), u.id);
+    return res.json({ user: self(getUser(u.id)), newTitles: fresh.map(t => ({ name: t.name, cond: t.cond })) });
+  }
+  const t = TITLES.find(x => (x.kind === 'secret' || x.kind === 'orbit') && x.key === req.body.key); if (!t) return bad(res, '无效');
   const u = getUser(req.user.id), have = owned(u);
   if (have.includes(t.key)) return res.json({ user: self(u), newTitles: [] });
   db.prepare('update users set titles = ? where id = ?').run(JSON.stringify([...have, t.key]), u.id);
-  res.json({ user: self(getUser(u.id)), newTitles: [{ name: t.name, cond: '' }] });
+  res.json({ user: self(getUser(u.id)), newTitles: [{ name: t.name, cond: t.cond }] });
 });
 
 // ---- 错误日志 ----

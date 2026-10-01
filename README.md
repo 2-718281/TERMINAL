@@ -1,10 +1,12 @@
 # Descensus Astrorum · 部署手册（仓库：2-718281/TERMINAL）
 
-仓库里的文件都放在根目录，不分子文件夹：
+仓库里的文件放在根目录，档案网页放在 `moon/`、`orbit/` 两个子文件夹：
 
 | 文件 | 作用 |
 |---|---|
 | `index.html` | 网页本体。改网页就替换这个文件 |
+| `moon/` | 月球观测站测试程序（客户端档案 → `/moon/`） |
+| `orbit/index.html` | 任务轨道规划培训 MSV-05（客户端档案 → `/orbit/`） |
 | `server.js` / `package.json` | 后端 |
 | `setup.sh` | 服务器首次安装 |
 | `update.sh` | 服务器更新 |
