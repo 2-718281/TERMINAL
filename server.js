@@ -46,6 +46,7 @@ create table if not exists radio(id integer primary key autoincrement, author te
 `);
 const addCol = (t, c, def) => { if (!db.prepare(`pragma table_info(${t})`).all().some(r => r.name === c)) db.exec(`alter table ${t} add column ${c} ${def}`); };
 addCol('users', 'dept', "text default ''");
+addCol('ads', 'once', 'integer default 0');
 addCol('users', 'orbit_fails', 'integer default 0');
 addCol('users', 'position', "text default ''");
 addCol('users', 'gender', "text default ''");
@@ -523,13 +524,13 @@ api.delete('/radio/:id', auth, (req, res) => {
 });
 
 // ---- 广告 ----
-const adOut = a => ({ id: a.id, text: a.text || '', image: a.image || '', link: a.link || '', createdAt: a.created_at });
+const adOut = a => ({ id: a.id, text: a.text || '', image: a.image || '', link: a.link || '', once: !!a.once, createdAt: a.created_at });
 api.get('/ads', auth, (req, res) => res.json({ items: db.prepare('select * from ads order by id desc').all().map(adOut) }));
 api.post('/ads', auth, admin, (req, res) => {
   const text = str(req.body.text, 300), image = req.body.image || '', link = /^https?:\/\//.test(req.body.link || '') ? str(req.body.link, 500) : '';
   if (!text && !image) return bad(res, '请填写广告内容');
   if (image && !isImg(image)) return bad(res, '图片格式或大小不支持');
-  db.prepare('insert into ads(text, image, link, created_at) values(?, ?, ?, ?)').run(text, image, link, Date.now());
+  db.prepare('insert into ads(text, image, link, once, created_at) values(?, ?, ?, ?, ?)').run(text, image, link, req.body.once ? 1 : 0, Date.now());
   res.json({ items: db.prepare('select * from ads order by id desc').all().map(adOut) });
 });
 api.delete('/ads/:id', auth, admin, (req, res) => {
