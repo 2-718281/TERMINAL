@@ -736,7 +736,7 @@ api.post('/field/rooms/:id/edit', auth, admin, (req, res) => {
   if (m.bot) { m.bot.stats = st; m.bot.skills = sk; m.bot.sane = sane; }
   else { if (!getUser(b.uid)) return bad(res, '用户不存在', 404); db.prepare('update users set stats = ?, skills = ?, sane = ? where id = ?').run(JSON.stringify(st), JSON.stringify(sk), sane ? 1 : 0, b.uid); }
   m.items = items; m.itemsDone = true;
-  res.json({ room: fieldOut(req.params.id, true) });
+  res.json({ room: fieldOut(req.params.id, isAdmin(req.user.id)) });
 });
 api.post('/field/rooms/:id/act', auth, (req, res) => {
   const r = fieldRoom(req.params.id), g = r && r.game, me = req.user.id, b = req.body || {}; if (!g) return bad(res, '游戏未开始', 409);
@@ -848,7 +848,7 @@ const gmHandler = (req, res) => {
     else { m.items = m.items || []; if (m.items.length >= cap) return bad(res, '随身背包已满（' + cap + '）'); m.items.push(d.item); if (!m.bot) { if (d.temp) m.temps = [...(m.temps || []), d.item]; else m.lootCarry = [...(m.lootCarry || []), d.item]; } }
     D.splice(+b.idx, 1); gameLog(r, '【' + nm + '】的【' + d.item + '】被归还', 'item'); }
   else return bad(res, '无效操作');
-  res.json({ room: fieldOut(req.params.id, true) });
+  res.json({ room: fieldOut(req.params.id, isAdmin(req.user.id)) });
 };
 api.post('/field/rooms/:id/gm', auth, admin, gmHandler);
 api.post('/field/rooms/:id/selfdrop', auth, (req, res) => {
