@@ -620,7 +620,7 @@ function gameStart(r) {
   r.game = { order: ids, turn: 0, round: 1, state: 'act', pending: null, log: [], seq: 0, hp, mad: {}, pendMad: {}, hurt: {}, hit: {} };
   gameLog(r, '行动顺序：' + ids.map(x => memberInfo(r, x).name).join(' → '), 'sys'); gameTurnLog(r);
 }
-function gameOut(r) { const g = r.game; if (!g) return null; return { round: g.round, turnId: g.order[g.turn] || '', order: g.order.map(x => { const i = memberInfo(r, x); return { id: x, name: i.name, dex: +((i.stats || {}).dex) || 0 }; }), state: g.state, pending: g.pending, dropped: g.dropped || [], fx: g.fx || {}, dead: g.dead || {}, log: (isAdmin(CUR_VIEWER) ? g.log : g.log.filter(l => !l.hide && (!l.to || l.to === CUR_VIEWER))).slice(-150) }; }
+function gameOut(r) { const g = r.game; if (!g) return null; return { round: g.round, turnId: g.order[g.turn] || '', order: g.order.map(x => { const i = memberInfo(r, x); return { id: x, name: i.name, dex: +((i.stats || {}).dex) || 0 }; }), state: g.state, pending: g.pending, dropped: g.dropped || [], fx: g.fx || {}, dead: g.dead || {}, log: (CUR_VIEWER && isAdmin(CUR_VIEWER) ? g.log : g.log.filter(l => !l.hide && (!l.to || (CUR_VIEWER && l.to === CUR_VIEWER)))).slice(-150) }; }
 function fieldOut(id, full) {
   const r = fieldRoom(id);
   const now = Date.now();
@@ -742,6 +742,7 @@ api.post('/field/rooms/:id/act', auth, (req, res) => {
   const r = fieldRoom(req.params.id), g = r && r.game, me = req.user.id, b = req.body || {}; if (!g) return bad(res, '游戏未开始', 409);
   if (!r.members[me]) return bad(res, '你不在该舰上', 403);
   if (isDead(r, me)) return bad(res, '你已死亡', 403);
+  if (madBagLost(r, me)) return bad(res, '你失去了重要的物品，无法行动', 403);
   if (g.order[g.turn] !== me) return bad(res, '还没轮到你', 409);
   if (g.state !== 'act') return bad(res, '已有待处理的申请', 409);
   const target = str(b.target, 24), info = memberInfo(r, me), item = str(b.item, 30);
@@ -808,7 +809,7 @@ api.post('/field/rooms/:id/next', auth, admin, (req, res) => {
   g.state = 'act'; gameTurnLog(r); madSkip(r);
   res.json({ room: fieldOut(req.params.id, true) });
 });
-api.post('/field/rooms/:id/gm', auth, admin, (req, res) => {
+const gmHandler = (req, res) => {
   const r = fieldRoom(req.params.id), g = r && r.game, b = req.body || {}; if (!g) return bad(res, '游戏未开始', 409);
   const i = mGet(r, b.uid); if (!i) return bad(res, '该成员不在舰上', 404);
   const nm = i.name, why = str(b.reason, 60); g.mad = g.mad || {}; g.pendMad = g.pendMad || {}; g.hurt = g.hurt || {};
@@ -848,6 +849,13 @@ api.post('/field/rooms/:id/gm', auth, admin, (req, res) => {
     D.splice(+b.idx, 1); gameLog(r, '【' + nm + '】的【' + d.item + '】被归还', 'item'); }
   else return bad(res, '无效操作');
   res.json({ room: fieldOut(req.params.id, true) });
+};
+api.post('/field/rooms/:id/gm', auth, admin, gmHandler);
+api.post('/field/rooms/:id/selfdrop', auth, (req, res) => {
+  const r = fieldRoom(req.params.id), g = r && r.game, me = req.user.id, b = req.body || {}; if (!g) return bad(res, '游戏未开始', 409);
+  if (!r.members[me]) return bad(res, '你不在该舰上', 403); if (isDead(r, me)) return bad(res, '你已死亡', 403);
+  if (((g.mad || {})[me] || {}).no === 8) return bad(res, '你紧紧抓着物品，无法丢弃', 403);
+  req.body = { uid: me, op: 'drop', src: b.src === 'loot' ? 'loot' : 'carry', idx: +b.idx }; return gmHandler(req, res);
 });
 api.post('/field/rooms/:id/again', auth, admin, (req, res) => {
   const r = fieldRoom(req.params.id), g = r && r.game; if (!g) return bad(res, '游戏未开始', 409);
