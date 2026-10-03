@@ -13,6 +13,8 @@ const ADMINS = Object.keys(ADMIN_DEPT);
 const DISPATCH_NAME = { 'DA-0409': '弘泽', 'DA-0042': '萨沙·瓦格纳', 'DA-1978': 'Kharon' };
 const dispLabel = id => { if (!DISPATCH_NAME[id]) return ''; const u = db.prepare('select dept from users where id = ?').get(id); return ((u && u.dept) || ADMIN_DEPT[id] || '') + '部长 · ' + DISPATCH_NAME[id]; };
 let ROSTER = {}; try { ROSTER = JSON.parse(require('fs').readFileSync(require('path').join(__dirname, 'roster.json'), 'utf8')); } catch (e) {}
+let NAMES = {}; const loadNames = () => { try { NAMES = JSON.parse(require('fs').readFileSync(require('path').join(__dirname, 'names.json'), 'utf8')) || {}; } catch (e) { NAMES = {}; } }; loadNames(); try { require('fs').watchFile(require('path').join(__dirname, 'names.json'), { interval: 5000 }, loadNames); } catch (e) {}
+const realName = (id, fallback) => NAMES[id] || (ROSTER[id] && ROSTER[id].name) || fallback || id;
 const presetDept = id => ADMIN_DEPT[id] || (ROSTER[id] && DEPTS.includes(ROSTER[id].dept) ? ROSTER[id].dept : '');
 const T_ = (kind, key, n, name, cond) => ({ kind, key, n, name, cond });
 const TITLES = [
@@ -198,7 +200,7 @@ const admin = (req, res, next) => isAdmin(req.user.id) ? next() : bad(res, '需�
 const statsOf = u => { try { const s = JSON.parse(u.stats || 'null'); return s && typeof s === 'object' ? s : null; } catch (e) { return null; } };
 const skillsOf = u => { try { const s = JSON.parse(u.skills || 'null'); return Array.isArray(s) && s.length === 3 ? s : null; } catch (e) { return null; } };
 const listOf = (u, k) => { try { const a = JSON.parse((u && u[k]) || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } };
-const self = u => ({ ...pub(u), idCard: u.idcard || '', personal: listOf(u, 'personal'), gained: listOf(u, 'gained'), stats: statsOf(u), skills: skillsOf(u), sane: u.sane !== 0, hp: u.hp == null ? null : u.hp });
+const self = u => ({ ...pub(u), realName: realName(u.id, u.name), idCard: u.idcard || '', personal: listOf(u, 'personal'), gained: listOf(u, 'gained'), stats: statsOf(u), skills: skillsOf(u), sane: u.sane !== 0, hp: u.hp == null ? null : u.hp });
 function mentionIds(text) {
   const out = new Set(), re = /@([^\s@，。,.!！?？:：;；、）)]+)/g; let m;
   while ((m = re.exec(String(text || '')))) {
@@ -595,10 +597,10 @@ const SKILL_LABELS = { pilot: ['飞船操控', '导航规划', '机动规避'], 
 const rollLevel = (r, v) => r <= 5 ? '大成功' : r >= 95 ? '大失败' : r <= Math.floor(v / 5) ? '极难成功' : r <= Math.floor(v / 2) ? '困难成功' : r <= v ? '常规成功' : '失败';
 const MAD_TABLE = ['昏迷/昏睡', '产生回忆场景的幻觉/认为自己处于过去', '失去听力/视力/痛感', '失去对他人的信任，拒绝任何帮助', '失去空间感', '窃窃私语，发出奇怪的音节', '身体某处剧烈幻痛/失去肢体的幻觉', '对随身物品极度依赖和保护欲', '失去语言表达与书写能力', '失去记忆'];
 const hpMaxOf = s => s ? Math.floor(((+s.siz || 0) + (+s.con || 0)) / 10) : 0;
-function mGet(r, x) { const m = r.members[x]; if (!m) return null; if (m.bot) return { name: m.bot.name, stats: m.bot.stats, hp: m.bot.hp == null ? null : m.bot.hp, er: +m.bot.er || 0, sane: m.bot.sane !== false }; const u = getUser(x); return u ? { name: u.name, stats: statsOf(u), hp: u.hp == null ? null : u.hp, er: +u.er || 0, sane: u.sane !== 0 } : null; }
+function mGet(r, x) { const m = r.members[x]; if (!m) return null; if (m.bot) return { name: m.bot.name, stats: m.bot.stats, hp: m.bot.hp == null ? null : m.bot.hp, er: +m.bot.er || 0, sane: m.bot.sane !== false }; const u = getUser(x); return u ? { name: realName(x, u.name), stats: statsOf(u), hp: u.hp == null ? null : u.hp, er: +u.er || 0, sane: u.sane !== 0 } : null; }
 const hpNow = i => { const mx = hpMaxOf(i && i.stats); return !i || i.hp == null ? mx : Math.min(+i.hp, mx); };
 function mSet(r, x, k, v) { const m = r.members[x]; if (!m) return; if (m.bot) { m.bot[k] = v; return; } const col = { hp: 'hp', er: 'er', sane: 'sane', stats: 'stats' }[k]; if (col) db.prepare('update users set ' + col + ' = ? where id = ?').run(k === 'stats' ? JSON.stringify(v) : k === 'sane' ? (v ? 1 : 0) : v, x); }
-function memberInfo(r, x) { const m = r.members[x] || {}, b = m.bot, u = b ? null : getUser(x); return { name: b ? b.name : u ? u.name : x, stats: b ? b.stats : u ? statsOf(u) : null, skills: b ? b.skills : u ? skillsOf(u) : null }; }
+function memberInfo(r, x) { const m = r.members[x] || {}, b = m.bot, u = b ? null : getUser(x); return { name: b ? b.name : realName(x, u && u.name), stats: b ? b.stats : u ? statsOf(u) : null, skills: b ? b.skills : u ? skillsOf(u) : null }; }
 function gameLog(r, text, kind, lv) { const g = r.game; g.seq++; g.log.push({ id: g.seq, t: Date.now(), kind, text, lv: lv || '' }); if (g.log.length > 300) g.log.shift(); }
 function gameTurnLog(r) { const g = r.game, x = g.order[g.turn]; gameLog(r, '第 ' + g.round + ' 轮 · 【' + (x ? memberInfo(r, x).name : '—') + '】的回合', 'turn'); }
 function gameStart(r) {
@@ -614,7 +616,7 @@ function fieldOut(id, full) {
   return { id: +id, max: 8, started: r.started, dispatcher: r.gm && (r.started || now - r.gm.t < 30000) ? dispLabel(r.gm.id) || r.gm.id : '', members: Object.keys(r.members).map(x => {
     const m = r.members[x], b = m.bot, u = b ? null : getUser(x);
     const mi = mGet(r, x) || {}, gg = r.game || {};
-    const o = { id: x, hp: hpNow(mi), hpMax: hpMaxOf(mi.stats), mad: (gg.mad || {})[x] || null, hit: (gg.hit || {})[x] || 0, loot: (gg.loot || {})[x] || [], name: b ? b.name : u ? u.name : x, avatar: u ? u.avatar || '' : '', ready: !!m.ready, itemsDone: !!m.itemsDone, items: m.items || [], temps: m.temps || [], lootCarry: m.lootCarry || [], bot: !!b, dispName: dispLabel(x), sane: b ? b.sane !== false : !!u && u.sane !== 0 };
+    const o = { id: x, hp: hpNow(mi), hpMax: hpMaxOf(mi.stats), mad: (gg.mad || {})[x] || null, hit: (gg.hit || {})[x] || 0, loot: (gg.loot || {})[x] || [], name: b ? b.name : realName(x, u && u.name), nick: u ? u.name : '', avatar: u ? u.avatar || '' : '', ready: !!m.ready, itemsDone: !!m.itemsDone, items: m.items || [], temps: m.temps || [], lootCarry: m.lootCarry || [], bot: !!b, dispName: dispLabel(x), sane: b ? b.sane !== false : !!u && u.sane !== 0 };
     if (full) { o.realName = b ? '测试账号' : (ROSTER[x] && ROSTER[x].name) || ''; o.stats = b ? b.stats : u ? statsOf(u) : null; o.skills = b ? b.skills : u ? skillsOf(u) : null; o.dept = b ? b.dept : u ? u.dept || '' : ''; o.er = mi.er || 0; o.pendMad = !!(gg.pendMad || {})[x]; }
     return o;
   }), game: gameOut(r) };
