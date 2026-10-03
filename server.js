@@ -644,7 +644,7 @@ api.post('/field/skills', auth, (req, res) => {
     if (!SKILL_CATS.includes(g.cat)) return bad(res, '请为' + title + '选择技能类别');
     if (seen.has(g.cat)) return bad(res, '三组专长不能重复'); seen.add(g.cat);
     const v = (Array.isArray(g.v) ? g.v : []).map(x => +x);
-    if (v.length !== 3 || v.some(x => !Number.isInteger(x) || x < 1 || x > 100)) return bad(res, title + ' 各项需为 1–100 的整数');
+    if (v.length !== 3 || v.some(x => !Number.isInteger(x) || x < 0 || x > 100)) return bad(res, title + ' 各项需为 0–100 的整数');
     const sum = v.reduce((a, b) => a + b, 0); if (!isAdmin(u.id) && sum > cap) return bad(res, title + ' 总和不能超过 ' + cap + '（当前 ' + sum + '）');
     out.push({ cat: g.cat, v });
   }
@@ -712,7 +712,7 @@ api.post('/field/rooms/:id/edit', auth, admin, (req, res) => {
   for (let i = 0; i < 3; i++) { const g = b.skills[i] || {}, title = SKILL_SLOTS[i][0];
     if (!SKILL_CATS.includes(g.cat)) return bad(res, '请为' + title + '选择技能类别');
     if (seen.has(g.cat)) return bad(res, '三组专长不能重复'); seen.add(g.cat);
-    const v = (Array.isArray(g.v) ? g.v : []).map(x => +x); if (v.length !== 3 || v.some(x => !Number.isInteger(x) || x < 1 || x > 100)) return bad(res, title + ' 各项需为 1–100 的整数');
+    const v = (Array.isArray(g.v) ? g.v : []).map(x => +x); if (v.length !== 3 || v.some(x => !Number.isInteger(x) || x < 0 || x > 100)) return bad(res, title + ' 各项需为 0–100 的整数');
     sk.push({ cat: g.cat, v }); }
   const items = (Array.isArray(b.items) ? b.items : []).map(x => str(x, 30)).filter(Boolean).slice(0, 10), sane = b.sane !== false;
   if (m.bot) { m.bot.stats = st; m.bot.skills = sk; m.bot.sane = sane; }
