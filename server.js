@@ -580,17 +580,11 @@ const STAT_KEYS = [['力量', 'str'], ['体质', 'con'], ['体型', 'siz'], ['�
 const hasStats = s => !!s && STAT_KEYS.every(([, k]) => Number.isInteger(+s[k]) && +s[k] > 0);
 const carryOf = s => s && Number.isFinite(+s.str) ? Math.max(0, Math.floor(+s.str / 20)) : 0;
 const FIELD = { 1: { members: {}, started: false }, 2: { members: {}, started: false } };
-const FIELD_BOTS = [
-  { id: 'TEST-01', name: '测试员 甲', dept: '驾驶部', stats: { str: 60, con: 60, siz: 60, pow: 60, dex: 70, luck: 50 }, skills: [{ cat: 'pilot', v: [70, 60, 50] }, { cat: 'scan', v: [50, 50, 50] }, { cat: 'fix', v: [50, 50, 50] }], items: ['手电筒', '记录仪', '胶带'] },
-  { id: 'TEST-02', name: '测试员 乙', dept: '研究部', stats: { str: 45, con: 55, siz: 50, pow: 80, dex: 60, luck: 70 }, skills: [{ cat: 'res', v: [70, 60, 50] }, { cat: 'scan', v: [60, 50, 40] }, { cat: 'med', v: [50, 50, 50] }], items: ['采样袋', '平板电脑'] },
-  { id: 'TEST-03', name: '测试员 丙', dept: '后勤部', stats: { str: 70, con: 70, siz: 65, pow: 50, dex: 55, luck: 50 }, skills: [{ cat: 'fix', v: [70, 60, 50] }, { cat: 'pilot', v: [50, 50, 50] }, { cat: 'scan', v: [50, 50, 50] }], items: ['扳手', '密封胶', '备用电池'] },
-  { id: 'TEST-04', name: '测试员 丁', dept: '后勤部', stats: { str: 50, con: 60, siz: 55, pow: 70, dex: 65, luck: 60 }, skills: [{ cat: 'med', v: [70, 60, 50] }, { cat: 'res', v: [50, 50, 50] }, { cat: 'fix', v: [50, 50, 50] }], items: ['急救包', '镇静剂'] }
-];
+const FIELD_BOTS = [];
 function fieldBots(id) {
   const r = FIELD[id]; if (!r || r.started) return;
   FIELD_BOTS.forEach(b => { if (!r.members[b.id] && Object.keys(r.members).length < 8) r.members[b.id] = { ready: true, seen: Date.now(), items: b.items.slice(), itemsDone: true, bot: { ...JSON.parse(JSON.stringify(b)), sane: true } }; });
 }
-fieldBots(1);
 function fieldRoom(id) {
   const r = FIELD[id]; if (!r) return null; const now = Date.now();
   Object.keys(r.members).forEach(x => { if (!r.started && !r.members[x].bot && now - r.members[x].seen > 20000) delete r.members[x]; });
@@ -620,7 +614,7 @@ function fieldOut(id, full) {
   return { id: +id, max: 8, started: r.started, dispatcher: r.gm && (r.started || now - r.gm.t < 30000) ? dispLabel(r.gm.id) || r.gm.id : '', members: Object.keys(r.members).map(x => {
     const m = r.members[x], b = m.bot, u = b ? null : getUser(x);
     const mi = mGet(r, x) || {}, gg = r.game || {};
-    const o = { id: x, hp: hpNow(mi), hpMax: hpMaxOf(mi.stats), mad: (gg.mad || {})[x] || null, hit: (gg.hit || {})[x] || 0, loot: (gg.loot || {})[x] || [], name: b ? b.name : u ? u.name : x, avatar: u ? u.avatar || '' : '', ready: !!m.ready, itemsDone: !!m.itemsDone, items: m.items || [], temps: m.temps || [], bot: !!b, dispName: dispLabel(x), sane: b ? b.sane !== false : !!u && u.sane !== 0 };
+    const o = { id: x, hp: hpNow(mi), hpMax: hpMaxOf(mi.stats), mad: (gg.mad || {})[x] || null, hit: (gg.hit || {})[x] || 0, loot: (gg.loot || {})[x] || [], name: b ? b.name : u ? u.name : x, avatar: u ? u.avatar || '' : '', ready: !!m.ready, itemsDone: !!m.itemsDone, items: m.items || [], temps: m.temps || [], lootCarry: m.lootCarry || [], bot: !!b, dispName: dispLabel(x), sane: b ? b.sane !== false : !!u && u.sane !== 0 };
     if (full) { o.realName = b ? '测试账号' : (ROSTER[x] && ROSTER[x].name) || ''; o.stats = b ? b.stats : u ? statsOf(u) : null; o.skills = b ? b.skills : u ? skillsOf(u) : null; o.dept = b ? b.dept : u ? u.dept || '' : ''; o.er = mi.er || 0; o.pendMad = !!(gg.pendMad || {})[x]; }
     return o;
   }), game: gameOut(r) };
@@ -699,11 +693,6 @@ api.post('/field/rooms/:id/confirm', auth, admin, (req, res) => {
   const ms = Object.values(r.members); if (!ms.length || ms.some(x => !x.ready)) return bad(res, '全员准备后才能确认', 409);
   r.started = true; r.gm = { id: req.user.id, t: Date.now() }; gameStart(r); res.json({ room: fieldOut(req.params.id, true) });
 });
-api.post('/field/rooms/:id/bots', auth, admin, (req, res) => {
-  const r = fieldRoom(req.params.id); if (!r) return bad(res, '无效舰船', 404);
-  if (r.started) return bad(res, '该舰已启航', 409);
-  fieldBots(req.params.id); res.json({ room: fieldOut(req.params.id, true) });
-});
 api.post('/field/rooms/:id/edit', auth, admin, (req, res) => {
   const r = fieldRoom(req.params.id), b = req.body || {}, m = r && r.members[b.uid]; if (!m) return bad(res, '该成员不在舰上', 404);
   const st = {}; for (const [label, k] of STAT_KEYS) { const v = +((b.stats || {})[k]); if (!Number.isInteger(v) || v < 1 || v > 100) return bad(res, label + ' 需为 1–100 的整数'); st[k] = v; }
@@ -738,6 +727,13 @@ api.post('/field/rooms/:id/say', auth, (req, res) => {
   const asGm = !!b.gm && isAdmin(req.user.id); if (!asGm && !r.members[req.user.id]) return bad(res, '你不在该舰上', 403);
   if (asGm) gameLog(r, '【' + (dispLabel(req.user.id) || '调度') + '】：' + text, 'gm'); else gameLog(r, '【' + memberInfo(r, req.user.id).name + '】：' + text, 'rp', g.order[g.turn] !== req.user.id ? 'off' : '');
   res.json({ room: fieldOut(req.params.id, isAdmin(req.user.id)) });
+});
+api.post('/field/rooms/:id/move', auth, (req, res) => {
+  const r = fieldRoom(req.params.id), g = r && r.game, me = req.user.id, m = r && r.members[me]; if (!g) return bad(res, '游戏未开始', 409); if (!m) return bad(res, '你不在该舰上', 403);
+  const L = (g.loot = g.loot || {})[me] = g.loot[me] || [], i = +(req.body || {}).idx, item = L[i]; if (!item) return bad(res, '物品不存在');
+  if ((m.items || []).length >= carryOf(statsOf(req.user))) return bad(res, '随身背包已满');
+  L.splice(i, 1); m.items = [...(m.items || []), item]; m.lootCarry = [...(m.lootCarry || []), item];
+  res.json({ room: fieldOut(req.params.id) });
 });
 api.post('/field/rooms/:id/cancel', auth, (req, res) => {
   const r = fieldRoom(req.params.id), g = r && r.game; if (!g) return bad(res, '游戏未开始', 409);
@@ -783,7 +779,7 @@ api.post('/field/rooms/:id/gm', auth, admin, (req, res) => {
     if (b.mad && !g.mad[b.uid]) { const t = crypto.randomInt(1, 11), dur = crypto.randomInt(1, 11); mSet(r, b.uid, 'sane', false); delete g.pendMad[b.uid]; g.mad[b.uid] = { no: t, type: MAD_TABLE[t - 1], left: dur }; gameLog(r, '【' + nm + '】陷入疯狂 · 1d10=' + t + '【' + MAD_TABLE[t - 1] + '】（持续 ' + dur + ' 回合）', 'mad'); }
   }
   else if (b.op === 'give') { const item = str(b.item, 30); if (!item) return bad(res, '请输入物品名称'); g.loot = g.loot || {}; const L = g.loot[b.uid] = g.loot[b.uid] || []; const cap = Math.floor((+((i.stats || {}).str) || 0) / 20); if (L.length >= cap) return bad(res, '获得栏位已满（' + cap + '）'); L.push(item); gameLog(r, '【' + nm + '】获得了【' + item + '】', 'item'); }
-  else if (b.op === 'drop') { g.loot = g.loot || {}; const m = r.members[b.uid]; const arr = b.src === 'loot' ? (g.loot[b.uid] = g.loot[b.uid] || []) : (m.items = m.items || []); const item = arr[+b.idx]; if (!item) return bad(res, '物品不存在'); arr.splice(+b.idx, 1); if (b.src !== 'loot' && !m.bot) { const ti = (m.temps || []).indexOf(item); if (ti >= 0) m.temps.splice(ti, 1); else { const uu = getUser(b.uid); if (uu) { const gd = listOf(uu, 'gained'), ps = listOf(uu, 'personal'), gi = gd.indexOf(item); if (gi >= 0) { gd.splice(gi, 1); db.prepare('update users set gained = ? where id = ?').run(JSON.stringify(gd), b.uid); } else { const pi = ps.indexOf(item); if (pi >= 0) { ps.splice(pi, 1); db.prepare('update users set personal = ? where id = ?').run(JSON.stringify(ps), b.uid); } } } } } g.dropped = g.dropped || []; g.dropped.push({ uid: b.uid, name: nm, item, src: b.src, round: g.round }); gameLog(r, '【' + nm + '】的【' + item + '】被丢弃', 'item'); }
+  else if (b.op === 'drop') { g.loot = g.loot || {}; const m = r.members[b.uid]; const arr = b.src === 'loot' ? (g.loot[b.uid] = g.loot[b.uid] || []) : (m.items = m.items || []); const item = arr[+b.idx]; if (!item) return bad(res, '物品不存在'); arr.splice(+b.idx, 1); if (b.src !== 'loot' && !m.bot) { const ti = (m.temps || []).indexOf(item), lci = (m.lootCarry || []).indexOf(item); if (ti >= 0) m.temps.splice(ti, 1); else if (lci >= 0) m.lootCarry.splice(lci, 1); else { const uu = getUser(b.uid); if (uu) { const gd = listOf(uu, 'gained'), ps = listOf(uu, 'personal'), gi = gd.indexOf(item); if (gi >= 0) { gd.splice(gi, 1); db.prepare('update users set gained = ? where id = ?').run(JSON.stringify(gd), b.uid); } else { const pi = ps.indexOf(item); if (pi >= 0) { ps.splice(pi, 1); db.prepare('update users set personal = ? where id = ?').run(JSON.stringify(ps), b.uid); } } } } } g.dropped = g.dropped || []; g.dropped.push({ uid: b.uid, name: nm, item, src: b.src, round: g.round }); gameLog(r, '【' + nm + '】的【' + item + '】被丢弃', 'item'); }
   else return bad(res, '无效操作');
   res.json({ room: fieldOut(req.params.id, true) });
 });
@@ -794,8 +790,8 @@ api.post('/field/rooms/:id/again', auth, admin, (req, res) => {
 });
 api.post('/field/rooms/:id/end', auth, admin, (req, res) => {
   const r0 = FIELD[req.params.id]; if (!r0) return bad(res, '无效舰船', 404);
-  Object.keys(r0.members).forEach(x => { const m = r0.members[x], L = ((r0.game || {}).loot || {})[x] || []; if (m.bot || !L.length) return; const uu = getUser(x); if (uu) db.prepare('update users set gained = ? where id = ?').run(JSON.stringify([...listOf(uu, 'gained'), ...L]), x); });
-  FIELD[req.params.id] = { members: {}, started: false }; if (req.params.id === '1') fieldBots(1); res.json({ room: fieldOut(req.params.id, true) });
+  Object.keys(r0.members).forEach(x => { const m = r0.members[x], L = [...(((r0.game || {}).loot || {})[x] || []), ...(m.lootCarry || [])]; if (m.bot || !L.length) return; const uu = getUser(x); if (uu) db.prepare('update users set gained = ? where id = ?').run(JSON.stringify([...listOf(uu, 'gained'), ...L]), x); });
+  FIELD[req.params.id] = { members: {}, started: false }; res.json({ room: fieldOut(req.params.id, true) });
 });
 api.post('/field/rooms/:id/reset', auth, admin, (req, res) => {
   if (!FIELD[req.params.id]) return bad(res, '无效舰船', 404);
