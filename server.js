@@ -776,6 +776,13 @@ api.post('/field/rooms/:id/fx', auth, admin, (req, res) => {
   const fx = g.fx = g.fx || {}; if (k === 'hit') fx.hit = (fx.hit || 0) + 1; else if (['alarm', 'deep', 'home'].includes(k)) fx[k] = !fx[k]; else return bad(res, '无效演出');
   res.json({ room: fieldOut(req.params.id, true) });
 });
+api.post('/field/rooms/:id/dice', auth, admin, (req, res) => {
+  const r = fieldRoom(req.params.id), g = r && r.game, b = req.body || {}; if (!g) return bad(res, '游戏未开始', 409);
+  const n = Math.floor(+b.n), m = Math.floor(+b.m); if (!(n >= 1 && n <= 100) || !(m >= 2 && m <= 1000)) return bad(res, '骰数 1–100，面数 2–1000');
+  const rs = Array.from({ length: n }, () => crypto.randomInt(1, m + 1)), sum = rs.reduce((a, c) => a + c, 0);
+  gameLog(r, (b.hide ? '〔暗骰〕' : '') + '【调度】骰点 ' + n + 'D' + m + '\n' + (n > 1 ? rs.join('+') + ' = ' : '') + sum, 'roll', 'dice', b.hide ? { hide: true } : null);
+  res.json({ room: fieldOut(req.params.id, true) });
+});
 api.post('/field/rooms/:id/move', auth, (req, res) => {
   const r = fieldRoom(req.params.id), g = r && r.game, me = req.user.id, m = r && r.members[me]; if (!g) return bad(res, '游戏未开始', 409); if (!m) return bad(res, '你不在该舰上', 403); if (((g.mad || {})[me] || {}).no === 8) return bad(res, '你紧紧抓着物品，无法移动', 403);
   const L = (g.loot = g.loot || {})[me] = g.loot[me] || [], i = +(req.body || {}).idx, item = L[i]; if (!item) return bad(res, '物品不存在');
