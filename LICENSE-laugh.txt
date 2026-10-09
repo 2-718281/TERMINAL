@@ -1,0 +1,4 @@
+laugh.wav — "72843 lonemonk approx-800-laughter-only-1.wav" by lonemonk (freesound.org), via Wikimedia Commons, CC BY 3.0.
+https://commons.wikimedia.org/wiki/File:72843_lonemonk_approx-800-laughter-only-1.wav
+https://creativecommons.org/licenses/by/3.0/
+Changes: trimmed to first 5 s, converted to 22.05 kHz mono WAV, normalized, fade-out added.
