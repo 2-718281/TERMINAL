@@ -584,7 +584,7 @@ const hasStats = s => !!s && STAT_KEYS.every(([, k]) => Number.isInteger(+s[k]) 
 const carryOf = s => s && Number.isFinite(+s.str) ? Math.max(0, Math.floor(+s.str / 20)) : 0;
 const FIELD = { 1: { members: {}, started: false }, 2: { members: {}, started: false } };
 // 主舰：常驻房间，不限人数，自由 RP（技能仍需调度批准）
-const mkMain = () => ({ members: {}, started: true, main: true, game: { order: [], turn: 0, round: 1, state: 'act', pending: null, log: [], seq: 0, hp: {}, mad: {}, pendMad: {}, hurt: {}, hit: {}, free: true } });
+const mkMain = () => ({ members: {}, started: true, main: true, game: { order: [], turn: 0, round: 1, state: 'act', pending: null, log: [], seq: 0, hp: {}, mad: {}, pendMad: {}, hurt: {}, hit: {} } });
 FIELD[3] = mkMain();
 const FIELD_BOTS = [];
 const GM_AS = { narr: '调度', res: '研究部长 · 萨沙·瓦格纳', pilot: '驾驶部长 · Kharon', log: '后勤部长 · 弘泽', nyx: '奈娅', q: '???', voice: '声音', bc: '广播' };
@@ -595,7 +595,7 @@ function fieldBots(id) {
 Object.keys(FIELD).forEach(fieldBots);
 function fieldRoom(id) {
   const r = FIELD[id]; if (!r) return null; const now = Date.now();
-  if (r.main) { Object.keys(r.members).forEach(x => { if (now - r.members[x].seen > 60000) delete r.members[x]; }); r.game.order = r.game.order.filter(x => r.members[x]); return r; }
+  if (r.main) { Object.keys(r.members).forEach(x => { if (now - r.members[x].seen > 60000) { delete r.members[x]; mainDrop(r, x); } }); r.game.order.filter(x => !r.members[x]).forEach(x => mainDrop(r, x)); return r; }
   Object.keys(r.members).forEach(x => { if (!r.started && !r.members[x].bot && now - r.members[x].seen > 20000) delete r.members[x]; });
   if (!Object.keys(r.members).length) r.started = false;
   return r;
@@ -605,7 +605,26 @@ const rollLevel = (r, v) => r <= 5 ? '大成功' : r >= 95 ? '大失败' : r <= 
 const MAD_TABLE = ['昏迷/昏睡', '产生回忆场景的幻觉/认为自己处于过去', '失去听力/视力/痛感', '失去对他人的信任，拒绝任何帮助', '失去空间感', '窃窃私语，发出奇怪的音节', '身体某处剧烈幻痛/失去肢体的幻觉', '对随身物品极度依赖和保护欲', '失去语言表达与书写能力', '失去记忆'];
 const madInit = (r, x) => { const g = r.game, md = g.mad[x]; md.since = (g.seq || 0) + 1; if (md.no === 8) md.bag = [...((r.members[x] || {}).items || []), ...((g.loot || {})[x] || [])]; };
 const madBagLost = (r, x) => { const g = r.game, md = (g.mad || {})[x]; if (!md || md.no !== 8 || !md.bag) return false; const hv = [...((r.members[x] || {}).items || []), ...((g.loot || {})[x] || [])]; return md.bag.some(it => { const q = hv.indexOf(it); if (q < 0) return true; hv.splice(q, 1); return false; }); };
-const newRound = r => { const g = r.game; g.turn = 0; g.round++; Object.keys(g.mad).forEach(x => { if (--g.mad[x].left <= 0) { delete g.mad[x]; mSet(r, x, 'sane', true); gameLog(r, '【' + memberInfo(r, x).name + '】的疯狂症状消退', 'sys'); } }); };
+// 主舰：每一大轮开始时按当前在线、已登记物品、未死亡的成员重新按 DEX 排序；中途加入的人从下一轮开始行动
+const mainOrder = r => Object.keys(r.members).filter(x => r.members[x].itemsDone && !isDead(r, x)).map(x => ({ x, dex: +((memberInfo(r, x).stats || {}).dex) || 0, k: Math.random() })).sort((a, c) => c.dex - a.dex || a.k - c.k).map(o => o.x);
+const mainReorder = r => { const g = r.game, ids = mainOrder(r), same = ids.length === g.order.length && ids.every((x, i) => x === g.order[i]); g.order = ids; if (ids.length && !same) gameLog(r, '行动顺序：' + ids.map(x => memberInfo(r, x).name).join(' → '), 'sys'); };
+function mainDrop(r, x) {
+  const g = r.game, i = g.order.indexOf(x); if (i < 0) return;
+  g.order.splice(i, 1);
+  if (g.pending && g.pending.uid === x) { g.pending = null; g.state = 'act'; }
+  if (i < g.turn) { g.turn--; return; }
+  if (i > g.turn) return;
+  g.pending = null; g.state = 'act';
+  if (g.turn >= g.order.length) newRound(r);
+  for (let n = 0; n < g.order.length && isDead(r, g.order[g.turn]); n++) { g.turn++; if (g.turn >= g.order.length) newRound(r); }
+  gameTurnLog(r);
+}
+function mainJoin(r, x) {
+  const g = r.game; if (g.order.includes(x) || !r.members[x] || !r.members[x].itemsDone) return;
+  if (!g.order.some(y => r.members[y] && !isDead(r, y))) { g.pending = null; g.state = 'act'; newRound(r); gameTurnLog(r); return; }
+  if (!(g.joined = g.joined || {})[x]) { g.joined[x] = g.round; gameLog(r, '【' + memberInfo(r, x).name + '】接入主舰通讯，将于第 ' + (g.round + 1) + ' 轮加入行动顺序', 'sys'); }
+}
+const newRound = r => { const g = r.game; g.turn = 0; g.round++; if (r.main) { g.joined = {}; mainReorder(r); } Object.keys(g.mad).forEach(x => { if (--g.mad[x].left <= 0) { delete g.mad[x]; mSet(r, x, 'sane', true); gameLog(r, '【' + memberInfo(r, x).name + '】的疯狂症状消退', 'sys'); } }); };
 const isDead = (r, x) => !!((r.game.dead || {})[x]);
 const stepTurn = r => { const g = r.game; g.turn++; if (g.turn >= g.order.length) newRound(r); for (let n = 0; n < g.order.length && isDead(r, g.order[g.turn]); n++) { g.turn++; if (g.turn >= g.order.length) newRound(r); } };
 const madSkip = r => { const g = r.game; for (let n = 0; n < g.order.length && madBagLost(r, g.order[g.turn]); n++) { gameLog(r, '【' + memberInfo(r, g.order[g.turn]).name + '】执着于失去的物品，跳过了回合', 'mad'); stepTurn(r); gameTurnLog(r); } };
@@ -617,7 +636,7 @@ function mSet(r, x, k, v) { const m = r.members[x]; if (!m) return; if (m.bot) {
 function memberInfo(r, x) { const m = r.members[x] || {}, b = m.bot, u = b ? null : getUser(x); return { name: b ? b.name : realName(x, u && u.name), stats: b ? b.stats : u ? statsOf(u) : null, skills: b ? b.skills : u ? skillsOf(u) : null }; }
 function gameLog(r, text, kind, lv, extra) { const g = r.game; g.seq++; const e = { id: g.seq, t: Date.now(), kind, text, lv: lv || '', ...(extra || {}) }; g.log.push(e); if (g.log.length > 300) g.log.shift(); g.all = g.all || []; g.all.push(e); if (g.all.length > 5000) g.all.shift(); }
 db.exec('create table if not exists field_logs(id integer primary key autoincrement, name text, ship text, members text, log text, by_ text, created_at integer)');
-function gameTurnLog(r) { const g = r.game, x = g.order[g.turn]; gameLog(r, '第 ' + g.round + ' 轮 · 【' + (x ? memberInfo(r, x).name : '—') + '】的回合', 'turn'); }
+function gameTurnLog(r) { const g = r.game, x = g.order[g.turn]; if (!x) { if (r.main) gameLog(r, '第 ' + g.round + ' 轮 · 暂无可行动船员', 'turn'); return; } gameLog(r, '第 ' + g.round + ' 轮 · 【' + (x ? memberInfo(r, x).name : '—') + '】的回合', 'turn'); }
 function gameStart(r) {
   const ids = Object.keys(r.members).map(x => ({ x, dex: +((memberInfo(r, x).stats || {}).dex) || 0, k: Math.random() })).sort((a, c) => c.dex - a.dex || a.k - c.k).map(o => o.x);
   const hp = {}; ids.forEach(x => { const s = memberInfo(r, x).stats || {}; hp[x] = Math.floor(((+s.siz || 0) + (+s.con || 0)) / 10); });
@@ -670,17 +689,20 @@ api.get('/field/mine', auth, (req, res) => {
 api.get('/field/rooms', auth, (req, res) => res.json({ max: 8, rooms: Object.keys(FIELD).map(id => { const r = fieldRoom(id); return { id: +id, n: Object.keys(r.members).length, started: r.started, main: !!r.main, lost: shipGet().lost.includes('sc' + id) }; }) }));
 api.get('/field/rooms/:id', auth, (req, res) => {
   const r = fieldRoom(req.params.id); if (!r) return bad(res, '无效舰船', 404);
+  if (isAdmin(req.user.id) && req.query.gm && r.main && r.members[req.user.id]) { delete r.members[req.user.id]; mainDrop(r, req.user.id); }
   if (r.members[req.user.id]) r.members[req.user.id].seen = Date.now();
   if (isAdmin(req.user.id) && req.query.gm) r.gm = { id: req.user.id, t: Date.now() };
   res.json({ room: fieldOut(req.params.id, isAdmin(req.user.id)) });
 });
+const NONCES = new Map();
+const once = (req, res, next) => { const n = (req.body || {}).nonce; if (typeof n !== 'string' || !n || n.length > 40) return next(); const now = Date.now(); for (const [k, t] of NONCES) { if (now - t > 120000) NONCES.delete(k); else break; } const k = req.user.id + ':' + n; if (NONCES.has(k)) return res.json({ room: fieldOut(req.params.id, isAdmin(req.user.id)) }); NONCES.set(k, now); next(); };
 api.post('/field/rooms/:id/join', auth, (req, res) => {
   const id = req.params.id, r = fieldRoom(id), me = req.user.id; if (!r) return bad(res, '无效舰船', 404);
   if (!r.main && shipGet().lost.includes('sc' + id)) return bad(res, '该先锋舰已失联，无法进入', 409);
   if (!hasStats(statsOf(req.user))) return bad(res, '请先登记属性', 403);
   if (!skillsOf(req.user)) return bad(res, '请先登记技能', 403);
   if (Object.keys(FIELD).some(x => x !== id && !FIELD[x].main && FIELD[x].started && FIELD[x].members[me])) return bad(res, '你正在外勤任务中', 409);
-  if (r.main) { if (!r.members[me]) r.members[me] = { ready: false, seen: Date.now(), items: [], itemsDone: false }; r.members[me].seen = Date.now(); if (r.members[me].itemsDone && !r.game.order.includes(me)) r.game.order.push(me); return res.json({ room: fieldOut(id) }); }
+  if (r.main) { if (!r.members[me]) r.members[me] = { ready: false, seen: Date.now(), items: [], itemsDone: false }; r.members[me].seen = Date.now(); mainJoin(r, me); return res.json({ room: fieldOut(id) }); }
   if (!r.members[me]) {
     if (r.started) return bad(res, '该舰已启航', 409);
     if (Object.keys(r.members).length >= 8) return bad(res, '该舰已满员', 409);
@@ -690,7 +712,7 @@ api.post('/field/rooms/:id/join', auth, (req, res) => {
   r.members[me].seen = Date.now();
   res.json({ room: fieldOut(id) });
 });
-api.post('/field/rooms/:id/leave', auth, (req, res) => { const r = fieldRoom(req.params.id); if (r && r.main) { delete r.members[req.user.id]; r.game.order = r.game.order.filter(x => x !== req.user.id); return res.json({ ok: true }); } if (r && !r.started) { delete r.members[req.user.id]; fieldRoom(req.params.id); } res.json({ ok: true }); });
+api.post('/field/rooms/:id/leave', auth, (req, res) => { const r = fieldRoom(req.params.id); if (r && r.main) { delete r.members[req.user.id]; mainDrop(r, req.user.id); return res.json({ ok: true }); } if (r && !r.started) { delete r.members[req.user.id]; fieldRoom(req.params.id); } res.json({ ok: true }); });
 api.post('/field/rooms/:id/items', auth, (req, res) => {
   const r = fieldRoom(req.params.id), m = r && r.members[req.user.id]; if (!m) return bad(res, '你不在该舰上', 403);
   if (r.started && !r.main) return bad(res, '该舰已启航', 409);
@@ -698,7 +720,7 @@ api.post('/field/rooms/:id/items', auth, (req, res) => {
   if (list.length > cap) return bad(res, '最多携带 ' + cap + ' 件');
   const bag = [...listOf(req.user, 'personal'), ...listOf(req.user, 'gained')];
   for (const x of list) if (!x.temp) { const i = bag.indexOf(x.name); if (i < 0) return bad(res, '背包中没有【' + x.name + '】'); bag.splice(i, 1); }
-  m.items = list.map(x => x.name); m.temps = list.filter(x => x.temp).map(x => x.name); m.itemsDone = true; m.ready = !!r.main; m.seen = Date.now(); if (r.main && !r.game.order.includes(req.user.id)) r.game.order.push(req.user.id);
+  m.items = list.map(x => x.name); m.temps = list.filter(x => x.temp).map(x => x.name); m.itemsDone = true; m.ready = !!r.main; m.seen = Date.now(); if (r.main) mainJoin(r, req.user.id);
   res.json({ room: fieldOut(req.params.id) });
 });
 api.post('/field/rooms/:id/ready', auth, (req, res) => {
@@ -744,13 +766,13 @@ api.post('/field/rooms/:id/edit', auth, admin, (req, res) => {
   m.items = items; m.itemsDone = true;
   res.json({ room: fieldOut(req.params.id, isAdmin(req.user.id)) });
 });
-api.post('/field/rooms/:id/act', auth, (req, res) => {
+api.post('/field/rooms/:id/act', auth, once, (req, res) => {
   const r = fieldRoom(req.params.id), g = r && r.game, me = req.user.id, b = req.body || {}; if (!g) return bad(res, '游戏未开始', 409);
   if (!r.members[me]) return bad(res, '你不在该舰上', 403);
   if (isDead(r, me)) return bad(res, '你已死亡', 403);
   if (madBagLost(r, me)) return bad(res, '你失去了重要的物品，无法行动', 403);
   if (!g.free && g.order[g.turn] !== me) return bad(res, '还没轮到你', 409);
-  if (g.free && !(r.gm && Date.now() - r.gm.t < 30000)) return bad(res, '当前没有调度员在线，暂时无法申请行动', 409);
+  if ((g.free || r.main) && !(r.gm && Date.now() - r.gm.t < 30000)) return bad(res, '当前没有调度员在线，暂时无法申请行动', 409);
   if (g.state !== 'act') return bad(res, '已有待处理的申请', 409);
   const target = str(b.target, 24), info = memberInfo(r, me), item = str(b.item, 30);
   if (item && ![...(r.members[me].items || []), ...((g.loot || {})[me] || [])].includes(item)) return bad(res, '物品不在背包中');
@@ -761,11 +783,12 @@ api.post('/field/rooms/:id/act', auth, (req, res) => {
   else return bad(res, '无效行动');
   g.state = 'pending'; res.json({ room: fieldOut(req.params.id) });
 });
-api.post('/field/rooms/:id/say', auth, (req, res) => {
+api.post('/field/rooms/:id/say', auth, once, (req, res) => {
   const r = fieldRoom(req.params.id), g = r && r.game, b = req.body || {}; if (!g) return bad(res, '游戏未开始', 409);
   const text = str(b.text, 300); if (!text) return bad(res, '内容为空');
   const asGm = !!b.gm && isAdmin(req.user.id); if (!asGm && !r.members[req.user.id]) return bad(res, '你不在该舰上', 403); if (!asGm && ((g.mad || {})[req.user.id] || {}).no === 9) return bad(res, '你无法组织语言', 403); if (!asGm && isDead(r, req.user.id)) return bad(res, '你已死亡', 403);
   const to = asGm && b.to && r.members[b.to] ? b.to : '';
+  { const lk = (asGm ? 'gm:' : '') + req.user.id, now = Date.now(), ls = (g.lastSay = g.lastSay || {})[lk]; if (ls && ls.text === text && now - ls.t < 8000) return res.json({ room: fieldOut(req.params.id, isAdmin(req.user.id)) }); g.lastSay[lk] = { text, t: now }; }
   if (asGm) { const as = GM_AS[b.as] ? b.as : 'narr'; gameLog(r, '【' + GM_AS[as] + '】：' + text, 'gm', as, to ? { to } : null); } else gameLog(r, '【' + memberInfo(r, req.user.id).name + '】：' + text, 'rp', g.order[g.turn] !== req.user.id ? 'off' : '');
   res.json({ room: fieldOut(req.params.id, isAdmin(req.user.id)) });
 });
@@ -779,31 +802,31 @@ api.post('/field/rooms/:id/savelog', auth, admin, (req, res) => {
 api.get('/admin/fieldlogs', auth, admin, (req, res) => res.json({ items: db.prepare('select id, name, ship, members, by_, created_at, json_array_length(log) n from field_logs order by id desc').all().map(x => ({ id: x.id, name: x.name, ship: x.ship, members: JSON.parse(x.members || '[]'), by: x.by_, createdAt: x.created_at, n: x.n })) }));
 api.get('/admin/fieldlogs/:id', auth, admin, (req, res) => { const x = db.prepare('select * from field_logs where id = ?').get(+req.params.id); if (!x) return bad(res, 'log 不存在', 404); res.json({ item: { id: x.id, name: x.name, ship: x.ship, members: JSON.parse(x.members || '[]'), log: JSON.parse(x.log || '[]'), by: x.by_, createdAt: x.created_at } }); });
 api.delete('/admin/fieldlogs/:id', auth, admin, (req, res) => { db.prepare('delete from field_logs where id = ?').run(+req.params.id); res.json({ ok: true }); });
-api.post('/field/rooms/:id/fx', auth, admin, (req, res) => {
+api.post('/field/rooms/:id/fx', auth, admin, once, (req, res) => {
   const r = fieldRoom(req.params.id), g = r && r.game, k = (req.body || {}).key; if (!g) return bad(res, '游戏未开始', 409);
   const fx = g.fx = g.fx || {}; if (k === 'hit') fx.hit = (fx.hit || 0) + 1; else if (['alarm', 'deep', 'home'].includes(k)) fx[k] = !fx[k]; else return bad(res, '无效演出');
   res.json({ room: fieldOut(req.params.id, true) });
 });
-api.post('/field/rooms/:id/dice', auth, admin, (req, res) => {
+api.post('/field/rooms/:id/dice', auth, admin, once, (req, res) => {
   const r = fieldRoom(req.params.id), g = r && r.game, b = req.body || {}; if (!g) return bad(res, '游戏未开始', 409);
   const n = Math.floor(+b.n), m = Math.floor(+b.m); if (!(n >= 1 && n <= 100) || !(m >= 2 && m <= 1000)) return bad(res, '骰数 1–100，面数 2–1000');
   const rs = Array.from({ length: n }, () => crypto.randomInt(1, m + 1)), sum = rs.reduce((a, c) => a + c, 0);
   gameLog(r, (b.hide ? '〔暗骰〕' : '') + '【调度】骰点 ' + n + 'D' + m + '\n' + (n > 1 ? rs.join('+') + ' = ' : '') + sum, 'roll', 'dice', b.hide ? { hide: true } : null);
   res.json({ room: fieldOut(req.params.id, true) });
 });
-api.post('/field/rooms/:id/move', auth, (req, res) => {
+api.post('/field/rooms/:id/move', auth, once, (req, res) => {
   const r = fieldRoom(req.params.id), g = r && r.game, me = req.user.id, m = r && r.members[me]; if (!g) return bad(res, '游戏未开始', 409); if (!m) return bad(res, '你不在该舰上', 403); if (((g.mad || {})[me] || {}).no === 8) return bad(res, '你紧紧抓着物品，无法移动', 403);
   const L = (g.loot = g.loot || {})[me] = g.loot[me] || [], i = +(req.body || {}).idx, item = L[i]; if (!item) return bad(res, '物品不存在');
   if ((m.items || []).length >= carryOf(statsOf(req.user))) return bad(res, '随身背包已满');
   L.splice(i, 1); m.items = [...(m.items || []), item]; m.lootCarry = [...(m.lootCarry || []), item];
   res.json({ room: fieldOut(req.params.id) });
 });
-api.post('/field/rooms/:id/cancel', auth, (req, res) => {
+api.post('/field/rooms/:id/cancel', auth, once, (req, res) => {
   const r = fieldRoom(req.params.id), g = r && r.game; if (!g) return bad(res, '游戏未开始', 409);
   if (g.state === 'pending' && g.pending && g.pending.uid === req.user.id) { g.pending = null; g.state = 'act'; }
   res.json({ room: fieldOut(req.params.id) });
 });
-api.post('/field/rooms/:id/judge', auth, admin, (req, res) => {
+api.post('/field/rooms/:id/judge', auth, admin, once, (req, res) => {
   const r = fieldRoom(req.params.id), g = r && r.game; if (!g) return bad(res, '游戏未开始', 409);
   if (g.state !== 'pending' || !g.pending) return bad(res, '没有待处理的申请', 409);
   const p = g.pending, on = p.target ? '对【' + p.target + '】' : '';
@@ -816,11 +839,11 @@ api.post('/field/rooms/:id/judge', auth, admin, (req, res) => {
   else { if (p.text) gameLog(r, '【' + p.name + '】：' + p.text, 'free'); gameLog(r, '【' + p.name + '】' + on + (p.item ? '使用了【' + p.item + '】' : '进行了人为干涉'), p.item ? 'item' : 'sys'); g.state = 'resolved'; }
   res.json({ room: fieldOut(req.params.id, true) });
 });
-api.post('/field/rooms/:id/next', auth, admin, (req, res) => {
+api.post('/field/rooms/:id/next', auth, admin, once, (req, res) => {
   const r = fieldRoom(req.params.id), g = r && r.game; if (!g) return bad(res, '游戏未开始', 409);
   g.mad = g.mad || {}; g.hit = g.hit || {}; Object.keys(g.hurt || {}).forEach(x => { g.hit[x] = (g.hit[x] || 0) + 1; }); g.hurt = {};
   Object.keys(g.pendMad || {}).forEach(x => { const t = crypto.randomInt(1, 11), dur = crypto.randomInt(1, 11); g.mad[x] = { no: t, type: madPick(t), left: dur }; madInit(r, x); gameLog(r, '【' + memberInfo(r, x).name + '】陷入疯狂 · 1d10=' + t + '【' + g.mad[x].type + '】（持续 ' + dur + ' 回合）', 'mad'); }); g.pendMad = {};
-  g.pending = null; if (!g.free) stepTurn(r);
+  g.pending = null; if (!g.free) { if (r.main && !g.order.length) newRound(r); else stepTurn(r); }
   g.state = 'act'; if (!g.free) { gameTurnLog(r); madSkip(r); }
   res.json({ room: fieldOut(req.params.id, true) });
 });
@@ -872,14 +895,14 @@ const gmHandler = (req, res) => {
   else return bad(res, '无效操作');
   res.json({ room: fieldOut(req.params.id, isAdmin(req.user.id)) });
 };
-api.post('/field/rooms/:id/gm', auth, admin, gmHandler);
-api.post('/field/rooms/:id/selfdrop', auth, (req, res) => {
+api.post('/field/rooms/:id/gm', auth, admin, once, gmHandler);
+api.post('/field/rooms/:id/selfdrop', auth, once, (req, res) => {
   const r = fieldRoom(req.params.id), g = r && r.game, me = req.user.id, b = req.body || {}; if (!g) return bad(res, '游戏未开始', 409);
   if (!r.members[me]) return bad(res, '你不在该舰上', 403); if (isDead(r, me)) return bad(res, '你已死亡', 403);
   if (((g.mad || {})[me] || {}).no === 8) return bad(res, '你紧紧抓着物品，无法丢弃', 403);
   req.body = { uid: me, op: 'drop', src: b.src === 'loot' ? 'loot' : 'carry', idx: +b.idx }; return gmHandler(req, res);
 });
-api.post('/field/rooms/:id/again', auth, admin, (req, res) => {
+api.post('/field/rooms/:id/again', auth, admin, once, (req, res) => {
   const r = fieldRoom(req.params.id), g = r && r.game; if (!g) return bad(res, '游戏未开始', 409);
   if (g.state !== 'resolved') return bad(res, '当前无法继续', 409);
   g.pending = null; g.state = 'act'; res.json({ room: fieldOut(req.params.id, true) });
