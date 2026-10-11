@@ -661,15 +661,15 @@ function gameStart(r) {
   r.game = { order: ids, turn: 0, round: 1, state: 'act', pending: null, log: [], seq: 0, hp, mad: {}, pendMad: {}, hurt: {}, hit: {} };
   gameLog(r, '行动顺序：' + ids.map(x => memberInfo(r, x).name).join(' → '), 'sys'); gameTurnLog(r);
 }
-function gameOut(r) { const g = r.game; if (!g) return null; return { dogUsed: !!g.dogUsed, free: !!g.free, round: g.round, turnId: g.free ? '' : (g.order[g.turn] || ''), order: g.order.map(x => { const i = memberInfo(r, x); return { id: x, name: i.name, dex: +((i.stats || {}).dex) || 0 }; }), state: g.state, pending: g.pending, skip: g.skip || {}, dropped: g.dropped || [], fx: g.fx || {}, dead: g.dead || {}, log: (CUR_VIEWER && isAdmin(CUR_VIEWER) ? g.log : g.log.filter(l => !l.hide && (!l.to || (CUR_VIEWER && l.to === CUR_VIEWER)))).slice(-150) }; }
+function gameOut(r) { const g = r.game; if (!g) return null; return { mapSeq: (g.map && g.map.seq) || 0, dogUsed: !!g.dogUsed, free: !!g.free, round: g.round, turnId: g.free ? '' : (g.order[g.turn] || ''), order: g.order.map(x => { const i = memberInfo(r, x); return { id: x, name: i.name, dex: +((i.stats || {}).dex) || 0 }; }), state: g.state, pending: g.pending, skip: g.skip || {}, dropped: g.dropped || [], fx: g.fx || {}, dead: g.dead || {}, log: (CUR_VIEWER && isAdmin(CUR_VIEWER) ? g.log : g.log.filter(l => !l.hide && (!l.to || (CUR_VIEWER && l.to === CUR_VIEWER)))).slice(-150) }; }
 function fieldOut(id, full) {
   const r = fieldRoom(id);
   const now = Date.now();
   return { id: +id, max: r.main ? 0 : 8, main: !!r.main, started: r.started, dispatcher: r.gm && ((r.started && !r.main) || now - r.gm.t < 30000) ? dispLabel(r.gm.id) || r.gm.id : '', members: Object.keys(r.members).filter(x => !(r.main && r.members[x].away)).map(x => {
     const m = r.members[x], b = m.bot, u = b ? null : getUser(x);
     const mi = mGet(r, x) || {}, gg = r.game || {};
-    const o = { id: x, hp: hpNow(mi), hpMax: hpMaxOf(mi.stats), mad: (gg.mad || {})[x] || null, hit: (gg.hit || {})[x] || 0, loot: (gg.loot || {})[x] || [], name: b ? b.name : realName(x, u && u.name), avatar: u ? u.avatar || '' : '', ready: !!m.ready, itemsDone: !!m.itemsDone, items: m.items || [], temps: m.temps || [], lootCarry: m.lootCarry || [], bot: !!b, dispName: dispLabel(x), sane: b ? b.sane !== false : !!u && u.sane !== 0 };
-    if (full) { o.realName = b ? '测试账号' : (ROSTER[x] && ROSTER[x].name) || ''; o.stats = b ? b.stats : u ? statsOf(u) : null; o.skills = b ? b.skills : u ? skillsOf(u) : null; o.dept = b ? b.dept : u ? u.dept || '' : ''; o.er = mi.er || 0; o.pendMad = !!(gg.pendMad || {})[x]; }
+    const o = { id: x, hp: hpNow(mi), hpMax: hpMaxOf(mi.stats), mad: (gg.mad || {})[x] || null, hit: (gg.hit || {})[x] || 0, loot: (gg.loot || {})[x] || [], name: b ? b.name : realName(x, u && u.name), avatar: u ? u.avatar || '' : '', ready: !!m.ready, itemsDone: !!m.itemsDone, items: m.items || [], temps: m.temps || [], lootCarry: m.lootCarry || [], bot: !!b, dispName: dispLabel(x), sane: b ? b.sane !== false : !!u && u.sane !== 0, stats: b ? b.stats : u ? statsOf(u) : null, skills: b ? b.skills : u ? skillsOf(u) : null, dept: b ? b.dept : u ? u.dept || '' : '', idCard: u ? u.idcard || '' : '' };
+    if (full) { o.realName = b ? '测试账号' : (ROSTER[x] && ROSTER[x].name) || ''; o.er = mi.er || 0; o.pendMad = !!(gg.pendMad || {})[x]; }
     return o;
   }), game: gameOut(r), def: r.main ? (() => { const s = shipGet(); let p = 0, q = 0; SHIP_MODS.forEach(m => { const d = defOf(s, m); p += d.p; q += d.s; }); return { p, s: q, max: SHIP_MODS.length * 30, ana: true, med: true, main: true }; })() : defOf(shipGet(), 'sc' + id) };
 }
@@ -713,6 +713,25 @@ api.get('/field/rooms/:id', auth, (req, res) => {
 });
 const NONCES = new Map();
 const once = (req, res, next) => { const n = (req.body || {}).nonce; if (typeof n !== 'string' || !n || n.length > 40) return next(); const now = Date.now(); for (const [k, t] of NONCES) { if (now - t > 120000) NONCES.delete(k); else break; } const k = req.user.id + ':' + n; if (NONCES.has(k)) return res.json({ room: fieldOut(req.params.id, isAdmin(req.user.id)) }); NONCES.set(k, now); next(); };
+// 临时测绘：只追加的操作日志（每条带客户端生成的唯一 id，重发去重），按服务器序号增量同步；清空/压缩时提高 base，落后的客户端整包重载
+const mapApply = (M, o, me, mem, adm) => {
+  const id = typeof o.id === 'string' && o.id.length <= 48 ? o.id : ''; if (!id || M.ids[id]) return;
+  const I = (v, mx) => Math.max(0, Math.min(mx, Math.round(+v || 0))); let e = null;
+  if (o.k === 'add' && (o.t === 'rect' || o.t === 'line') && Array.isArray(o.a) && o.a.length === 4) { if ((M.live || 0) >= 600) return; const a = [I(o.a[0], 36), I(o.a[1], 24), I(o.a[2], 36), I(o.a[3], 24)]; if (a[0] === a[2] && a[1] === a[3]) return; if (o.t === 'rect' && (a[0] === a[2] || a[1] === a[3])) return; e = { k: 'add', t: o.t, a }; }
+  else if (o.k === 'del') { const t = M.ops.find(x => x.k === 'add' && x.id === o.ref); if (!t || (t.uid !== me && !adm) || M.ops.some(x => x.k === 'del' && x.ref === t.id)) return; e = { k: 'del', ref: t.id }; }
+  else if (o.k === 'pin' && mem) e = +o.x < 0 ? { k: 'pin', x: -1, y: -1 } : { k: 'pin', x: I(o.x, 36 - 1), y: I(o.y, 23) };
+  else if (o.k === 'clr' && adm) { M.seq++; M.base = M.seq; M.ops = []; M.live = 0; M.ids = { [id]: 1 }; return; }
+  if (!e) return; M.ids[id] = 1; M.seq++; M.ops.push({ ...e, id, uid: me, seq: M.seq }); if (e.k === 'add') M.live = (M.live || 0) + 1; if (e.k === 'del') M.live = Math.max(0, (M.live || 0) - 1);
+  if (M.ops.length > 1500) { const dead = new Set(M.ops.filter(x => x.k === 'del').map(x => x.ref)), pins = {}; M.ops.forEach(x => { if (x.k === 'pin') pins[x.uid] = x; }); M.seq++; M.base = M.seq; M.ops = [...M.ops.filter(x => x.k === 'add' && !dead.has(x.id)), ...Object.values(pins).filter(x => x.x >= 0)].map(x => ({ ...x, seq: M.seq })); }
+};
+api.post('/field/rooms/:id/map', auth, (req, res) => {
+  const r = fieldRoom(req.params.id), g = r && r.game; if (!g) return bad(res, '游戏未开始', 409);
+  const me = req.user.id, adm = isAdmin(me), mem = !!r.members[me]; if (!mem && !adm) return bad(res, '你不在该舰上', 403);
+  const M = g.map || (g.map = { seq: 0, base: 0, ops: [], ids: {}, live: 0 }), b = req.body || {};
+  (Array.isArray(b.ops) ? b.ops.slice(0, 60) : []).forEach(o => o && typeof o === 'object' && mapApply(M, o, me, mem, adm));
+  const since = Math.floor(+b.since || 0);
+  res.json(since < M.base || since > M.seq ? { seq: M.seq, reset: true, ops: M.ops } : { seq: M.seq, ops: M.ops.filter(o => o.seq > since) });
+});
 api.post('/field/rooms/:id/ungm', auth, admin, (req, res) => { const r = fieldRoom(req.params.id); if (r && r.gm && r.gm.id === req.user.id) delete r.gm; res.json({ ok: true }); });
 api.post('/field/rooms/:id/join', auth, (req, res) => {
   const id = req.params.id, r = fieldRoom(id), me = req.user.id; if (!r) return bad(res, '无效舰船', 404);
