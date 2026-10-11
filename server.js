@@ -11,7 +11,7 @@ const ADMIN_DEPT = { 'DA-1978': '驾驶部', 'DA-0409': '后勤部', 'DA-0042': 
 const DEPTS = ['研究部', '驾驶部', '后勤部'];
 const ADMINS = Object.keys(ADMIN_DEPT);
 const DISPATCH_NAME = { 'DA-0409': '弘泽', 'DA-0042': '萨沙·瓦格纳', 'DA-1978': 'Kharon' };
-const dispLabel = id => { if (!DISPATCH_NAME[id]) return ''; const u = db.prepare('select dept from users where id = ?').get(id); return ((u && u.dept) || ADMIN_DEPT[id] || '') + '部长 · ' + DISPATCH_NAME[id]; };
+const dispLabel = id => DISPATCH_NAME[id] || '';
 let ROSTER = {}; try { ROSTER = JSON.parse(require('fs').readFileSync(require('path').join(__dirname, 'roster.json'), 'utf8')); } catch (e) {}
 let NAMES = {}; const loadNames = () => { try { NAMES = JSON.parse(require('fs').readFileSync(require('path').join(__dirname, 'names.json'), 'utf8')) || {}; } catch (e) { NAMES = {}; } }; loadNames(); try { require('fs').watchFile(require('path').join(__dirname, 'names.json'), { interval: 5000 }, loadNames); } catch (e) {}
 const saveNames = () => { try { require('fs').writeFileSync(require('path').join(__dirname, 'names.json'), JSON.stringify(NAMES, null, 1)); } catch (e) {} };
@@ -594,7 +594,7 @@ function mainSave(r) { clearTimeout(mainSaveT); mainSaveT = setTimeout(() => { t
 function mainLoad() { try { const x = db.prepare("select v from kv where k = 'main_log'").get(); if (!x) return; const d = JSON.parse(x.v), g = FIELD[3].game; g.all = Array.isArray(d.all) ? d.all : []; g.log = g.all.slice(-300); g.seq = +d.seq || (g.all.length ? g.all[g.all.length - 1].id : 0); g.round = +d.round || 1; g.fx = d.fx || {}; } catch (e) {} }
 function mainClear() { clearTimeout(mainSaveT); try { db.prepare("delete from kv where k = 'main_log'").run(); } catch (e) {} }
 const FIELD_BOTS = [];
-const GM_AS = { narr: '调度', res: '研究部长 · 萨沙·瓦格纳', pilot: '驾驶部长 · Kharon', log: '后勤部长 · 弘泽', nyx: '奈娅', q: '???', voice: '声音', bc: '广播' };
+const GM_AS = { narr: '调度', res: '萨沙·瓦格纳', pilot: 'Kharon', log: '弘泽', nyx: '奈娅', q: '???', voice: '声音', bc: '广播' };
 function fieldBots(id) {
   const r = FIELD[id]; if (!r || r.started) return;
   FIELD_BOTS.forEach(b => { if (!r.members[b.id] && Object.keys(r.members).length < 8) r.members[b.id] = { ready: true, seen: Date.now(), items: b.items.slice(), itemsDone: true, bot: { ...JSON.parse(JSON.stringify(b)), sane: true } }; });
