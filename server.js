@@ -606,6 +606,10 @@ const FIELD = { 1: { members: {}, started: false }, 2: { members: {}, started: f
 // 主舰：常驻房间，不限人数，自由 RP（技能仍需调度批准）
 const mkMain = () => ({ members: {}, started: true, main: true, game: { order: [], turn: 0, round: 1, state: 'act', pending: null, log: [], seq: 0, hp: {}, mad: {}, pendMad: {}, hurt: {}, hit: {} } });
 FIELD[3] = mkMain();
+// 娱乐室 · 秘密投票：不计入外勤 / 舰船位置；全员自由检定，无需调度
+const FUN_ID = '9', FUN_MIN = 3, FUN_MAX = 12, FUN_SEC = 300000, FUN_GAP = 6000;
+const mkFun = () => ({ members: {}, started: false, fun: true, secrets: {} });
+FIELD[FUN_ID] = mkFun();
 // 主舰记录持久化：服务器重启后仍保留完整聊天记录与轮次
 let mainSaveT = null;
 function mainSave(r) { clearTimeout(mainSaveT); mainSaveT = setTimeout(() => { try { const g = r.game; db.prepare("insert or replace into kv(k, v) values('main_log', ?)").run(JSON.stringify({ all: g.all || [], seq: g.seq || 0, round: g.round || 1, fx: g.fx || {} })); } catch (e) {} }, 2000); }
@@ -614,12 +618,13 @@ function mainClear() { clearTimeout(mainSaveT); try { db.prepare("delete from kv
 const FIELD_BOTS = [];
 const GM_AS = { narr: '调度', res: '萨沙·瓦格纳', pilot: 'Kharon', log: '弘泽', nyx: '奈娅', q: '???', voice: '声音', bc: '广播' };
 function fieldBots(id) {
-  const r = FIELD[id]; if (!r || r.started) return;
+  const r = FIELD[id]; if (!r || r.started || r.fun) return;
   FIELD_BOTS.forEach(b => { if (!r.members[b.id] && Object.keys(r.members).length < 8) r.members[b.id] = { ready: true, seen: Date.now(), items: b.items.slice(), itemsDone: true, bot: { ...JSON.parse(JSON.stringify(b)), sane: true } }; });
 }
 Object.keys(FIELD).forEach(fieldBots);
 function fieldRoom(id) {
   const r = FIELD[id]; if (!r) return null; const now = Date.now();
+  if (r.fun) return funRoom(id, r, now);
   if (r.main) { Object.keys(r.members).forEach(x => { const m = r.members[x], idle = now - m.seen; if (idle > 6 * 3600e3) { delete r.members[x]; mainDrop(r, x); } else if (idle > 60000 && !m.away) { m.away = true; mainDrop(r, x); } }); r.game.order.filter(x => !r.members[x]).forEach(x => mainDrop(r, x)); return r; }
   Object.keys(r.members).forEach(x => { if (!r.started && !r.members[x].bot && now - r.members[x].seen > 20000) delete r.members[x]; });
   if (!Object.keys(r.members).length) r.started = false;
@@ -679,17 +684,58 @@ function gameStart(r) {
   r.game = { order: ids, turn: 0, round: 1, state: 'act', pending: null, log: [], seq: 0, hp, mad: {}, pendMad: {}, hurt: {}, hit: {} };
   gameLog(r, '行动顺序：' + ids.map(x => memberInfo(r, x).name).join(' → '), 'sys'); gameTurnLog(r);
 }
-function gameOut(r) { const g = r.game; if (!g) return null; return { mapSeq: (g.map && g.map.seq) || 0, dogUsed: !!g.dogUsed, free: !!g.free, round: g.round, turnId: g.free ? '' : (g.order[g.turn] || ''), order: g.order.map(x => { const i = memberInfo(r, x); return { id: x, name: i.name, dex: +((i.stats || {}).dex) || 0 }; }), state: g.state, pending: g.pending, skip: g.skip || {}, dropped: g.dropped || [], fx: g.fx || {}, dead: g.dead || {}, log: (CUR_VIEWER && isAdmin(CUR_VIEWER) ? g.log : g.log.filter(l => !l.hide && (!l.to || (CUR_VIEWER && l.to === CUR_VIEWER)))).slice(-150) }; }
+function funRoom(id, r, now) {
+  if (!r.started) { Object.keys(r.members).forEach(x => { if (now - r.members[x].seen > 20000) { delete r.members[x]; delete r.secrets[x]; } }); const ms = Object.values(r.members), go = ms.length >= FUN_MIN && ms.every(x => x.ready); if (!go) r.cd = 0; else if (!r.cd) r.cd = now + 10000; else if (now >= r.cd) { r.cd = 0; funStart(r); } return r; }
+  if (!Object.keys(r.members).some(x => now - r.members[x].seen < 600000)) { FIELD[id] = mkFun(); return FIELD[id]; }
+  funTick(r); return r;
+}
+const FUN_RES = { none: '无人猜对 · 无人胜利', author: '猜对少于半数 · 出题人胜利', guess: '猜对多于半数 · 猜题人胜利', tie: '猜对恰好半数 · 平局' };
+const funName = x => { const u = getUser(x); return u ? realName(x, u.name) : x; };
+function funTick(r) {}
+function funNext(r) {
+  const g = r.game, V = g.vote; V.i++; if (V.i >= V.q.length) return funEnd(r);
+  const a = V.q[V.i]; V.cur = { no: V.i + 1, author: a, text: r.secrets[a] || '', votes: {} };
+  gameLog(r, '第 ' + V.cur.no + ' / ' + V.q.length + ' 题 · 抽出秘密\n「' + V.cur.text + '」\n这是谁的秘密？', 'secret', '', { vno: V.cur.no, sec: V.cur.text });
+}
+function funClose(r) {
+  const g = r.game, V = g.vote, c = V.cur, ids = [...new Set([...g.order, c.author])], guess = Object.keys(c.votes).filter(x => x !== c.author), N = guess.length, k = guess.filter(x => c.votes[x] === c.author).length;
+  const out = k === 0 ? 'none' : k * 2 < N ? 'author' : k * 2 > N ? 'guess' : 'tie', rec = {};
+  ids.forEach(x => { const au = x === c.author, v = c.votes[x] || ''; rec[x] = { role: au ? 'author' : 'guess', vote: v, ok: !au && v === c.author, res: out === 'author' ? (au ? 'W' : 'L') : out === 'guess' ? (au ? 'L' : 'W') : 'D' }; });
+  V.rounds.push({ no: c.no, author: c.author, text: c.text, N, k, out, shown: out !== 'none', rec }); V.cur = null; V.nextAt = Date.now() + FUN_GAP;
+  gameLog(r, '第 ' + c.no + ' 题投票截止 · 有效票 ' + N + ' · 猜对 ' + k + ' 人\n' + (out !== 'none' ? '答案：【' + funName(c.author) + '】' : '答案将在游戏结束时公布') + '\n' + FUN_RES[out], 'funres', out);
+}
+function funEnd(r) {
+  const g = r.game, V = g.vote; V.end = true; V.cur = null;
+  gameLog(r, '全部秘密已抽完 · 游戏结束 · 公布全部答案\n' + V.rounds.map(x => '第 ' + x.no + ' 题「' + x.text + '」→【' + funName(x.author) + '】 · ' + x.k + ' 人答对').join('\n'), 'funres', 'end');
+  [...new Set(V.rounds.flatMap(x => Object.keys(x.rec)))].forEach(x => {
+    const s = { W: 0, L: 0, D: 0 }, lines = V.rounds.map(rd => { const e = rd.rec[x]; if (!e) return null; s[e.res]++; return '第 ' + rd.no + ' 题 · ' + (e.role === 'author' ? '出题' : e.vote ? '投【' + funName(e.vote) + '】' + (e.ok ? '✓' : '✗') : '未投票') + ' · ' + { W: '胜', L: '负', D: '平' }[e.res]; }).filter(Boolean);
+    gameLog(r, '秘密投票 · 个人战绩\n胜 ' + s.W + ' · 负 ' + s.L + ' · 平 ' + s.D + '\n' + lines.join('\n'), 'gm', 'narr', { to: x });
+  });
+}
+function funStart(r) {
+  const ids = Object.keys(r.members).map(x => ({ x, dex: +((memberInfo(r, x).stats || {}).dex) || 0, k: Math.random() })).sort((a, c) => c.dex - a.dex || a.k - c.k).map(o => o.x);
+  const q = ids.filter(x => r.secrets[x]); for (let i = q.length - 1; i > 0; i--) { const j = crypto.randomInt(0, i + 1); [q[i], q[j]] = [q[j], q[i]]; }
+  r.started = true; r.game = { order: ids, turn: 0, round: 1, state: 'act', pending: null, log: [], seq: 0, hp: {}, mad: {}, pendMad: {}, hurt: {}, hit: {}, free: true, vote: { q, i: -1, cur: null, rounds: [], end: false, nextAt: 0 } };
+  gameLog(r, '秘密投票开始 · 共 ' + q.length + ' 题\n由调度宣布截止并进入下一题，从员工列表中投出秘密的主人（出题人的票不计入）\n0 人猜对：无人胜利，答案留到游戏结束公布\n猜对少于半数：出题人胜利\n猜对多于半数：猜题人胜利', 'sys');
+  funNext(r);
+}
+function funOut(r, me) {
+  const g = r.game, V = g && g.vote; if (!V) return null; const c = V.cur;
+  return { now: Date.now(), total: V.q.length, idx: V.i + 1, end: !!V.end,
+    rounds: (V.end ? V.rounds : []).map(x => { const open = x.shown || V.end; return { no: x.no, text: x.text, N: x.N, k: x.k, out: x.out, answerName: open ? funName(x.author) : '', rows: Object.keys(x.rec).map(u => { const e = x.rec[u]; return { uid: u, name: funName(u), role: !open && e.role === 'author' ? 'guess' : e.role, vote: e.vote, vname: e.vote ? funName(e.vote) : '', ok: e.ok, res: e.res }; }) }; }),
+    cur: c ? { no: c.no, text: c.text, t1: c.t1, mine: c.votes[me] || '', isMine: c.author === me, votes: Object.keys(c.votes).map(x => ({ uid: x, name: funName(x), target: c.votes[x], tname: funName(c.votes[x]) })) } : null };
+}
+function gameOut(r) { const g = r.game; if (!g) return null; return { mapSeq: (g.map && g.map.seq) || 0, dogUsed: !!g.dogUsed, free: !!g.free, round: g.round, turnId: g.free ? '' : (g.order[g.turn] || ''), order: g.order.map(x => { const i = memberInfo(r, x); return { id: x, name: i.name, dex: +((i.stats || {}).dex) || 0 }; }), state: g.state, pending: g.pending, skip: g.skip || {}, dropped: g.dropped || [], fx: g.fx || {}, dead: g.dead || {}, log: (CUR_VIEWER && isAdmin(CUR_VIEWER) && !r.fun ? g.log : g.log.filter(l => !l.hide && (!l.to || (CUR_VIEWER && l.to === CUR_VIEWER)))).slice(-150) }; }
 function fieldOut(id, full) {
   const r = fieldRoom(id);
   const now = Date.now();
-  return { id: +id, max: r.main ? 0 : 8, main: !!r.main, started: r.started, dispatcher: r.gm && ((r.started && !r.main) || now - r.gm.t < 30000) ? dispLabel(r.gm.id) || r.gm.id : '', members: Object.keys(r.members).filter(x => !(r.main && r.members[x].away)).map(x => {
+  return { id: +id, max: r.main || r.fun ? 0 : 8, main: !!r.main, fun: !!r.fun, cd: r.fun && r.cd ? Math.max(0, r.cd - now) : 0, vote: r.fun ? funOut(r, CUR_VIEWER) : null, started: r.started, dispatcher: r.gm && ((r.started && !r.main) || now - r.gm.t < 30000) ? dispLabel(r.gm.id) || r.gm.id : '', members: Object.keys(r.members).filter(x => !(r.main && r.members[x].away)).map(x => {
     const m = r.members[x], b = m.bot, u = b ? null : getUser(x);
     const mi = mGet(r, x) || {}, gg = r.game || {};
-    const o = { id: x, hp: hpNow(mi), hpMax: hpMaxOf(mi.stats), mad: (gg.mad || {})[x] || null, hit: (gg.hit || {})[x] || 0, loot: (gg.loot || {})[x] || [], name: b ? b.name : realName(x, u && u.name), avatar: u ? u.avatar || '' : '', ready: !!m.ready, itemsDone: !!m.itemsDone, items: m.items || [], temps: m.temps || [], lootCarry: m.lootCarry || [], bot: !!b, dispName: dispLabel(x), sane: b ? b.sane !== false : !!u && u.sane !== 0, stats: b ? b.stats : u ? statsOf(u) : null, skills: b ? b.skills : u ? skillsOf(u) : null, dept: b ? b.dept : u ? u.dept || '' : '', idCard: u ? u.idcard || '' : '' };
+    const o = { id: x, hp: hpNow(mi), hpMax: hpMaxOf(mi.stats), mad: (gg.mad || {})[x] || null, hit: (gg.hit || {})[x] || 0, loot: (gg.loot || {})[x] || [], name: b ? b.name : realName(x, u && u.name), avatar: u ? u.avatar || '' : '', ready: !!m.ready, itemsDone: !!m.itemsDone, items: m.items || [], temps: m.temps || [], lootCarry: m.lootCarry || [], bot: !!b, dispName: dispLabel(x), sane: b ? b.sane !== false : !!u && u.sane !== 0, stats: b ? b.stats : u ? statsOf(u) : null, skills: b ? b.skills : u ? skillsOf(u) : null, dept: b ? b.dept : u ? u.dept || '' : '', idCard: u ? u.idcard || '' : '', secret: r.fun && !r.started && x === CUR_VIEWER ? (r.secrets || {})[x] || '' : '' };
     if (full) { o.realName = b ? '测试账号' : (ROSTER[x] && ROSTER[x].name) || ''; o.er = mi.er || 0; o.pendMad = !!(gg.pendMad || {})[x]; }
     return o;
-  }), game: gameOut(r), def: r.main ? (() => { const s = shipGet(); let p = 0, q = 0; SHIP_MODS.forEach(m => { const d = defOf(s, m); p += d.p; q += d.s; }); return { p, s: q, max: SHIP_MODS.length * 30, ana: true, med: true, main: true }; })() : defOf(shipGet(), 'sc' + id) };
+  }), game: gameOut(r), def: r.fun ? null : r.main ? (() => { const s = shipGet(); let p = 0, q = 0; SHIP_MODS.forEach(m => { const d = defOf(s, m); p += d.p; q += d.s; }); return { p, s: q, max: SHIP_MODS.length * 30, ana: true, med: true, main: true }; })() : defOf(shipGet(), 'sc' + id) };
 }
 api.post('/field/stats', auth, (req, res) => {
   const u = req.user; if (hasStats(statsOf(u))) return bad(res, '属性已登记，如需修改请联系调度', 409);
@@ -719,10 +765,10 @@ api.post('/field/skills', auth, (req, res) => {
 });
 api.get('/field/mine', auth, (req, res) => {
   const me = req.user.id; let member = 0, started = false, gmRoom = 0;
-  Object.keys(FIELD).forEach(id => { const r = fieldRoom(id); if (r.members[me]) { member = +id; started = r.started; } if (r.started && r.gm && r.gm.id === me && !r.members[me] && Date.now() - r.gm.t < 30000) gmRoom = +id; });
+  Object.keys(FIELD).forEach(id => { if (FIELD[id].fun) return; const r = fieldRoom(id); if (r.members[me]) { member = +id; started = r.started; } if (r.started && r.gm && r.gm.id === me && !r.members[me] && Date.now() - r.gm.t < 30000) gmRoom = +id; });
   res.json({ member, started, gmRoom });
 });
-api.get('/field/rooms', auth, (req, res) => res.json({ max: 8, rooms: Object.keys(FIELD).map(id => { const r = fieldRoom(id); return { id: +id, n: Object.keys(r.members).length, started: r.started, main: !!r.main, lost: shipGet().lost.includes('sc' + id) }; }) }));
+api.get('/field/rooms', auth, (req, res) => res.json({ max: 8, rooms: Object.keys(FIELD).filter(id => !FIELD[id].fun).map(id => { const r = fieldRoom(id); return { id: +id, n: Object.keys(r.members).length, started: r.started, main: !!r.main, lost: shipGet().lost.includes('sc' + id) }; }) }));
 api.get('/field/rooms/:id', auth, (req, res) => {
   const r = fieldRoom(req.params.id); if (!r) return bad(res, '无效舰船', 404);
   { const m = r.members[req.user.id]; if (m) { m.seen = Date.now(); if (r.main && m.away && !req.query.gm) { m.away = false; mainJoin(r, req.user.id); } } }
@@ -756,20 +802,22 @@ api.post('/field/rooms/:id/join', auth, (req, res) => {
   if (!r.main && shipGet().lost.includes('sc' + id)) return bad(res, '该先锋舰已失联，无法进入', 409);
   if (!hasStats(statsOf(req.user))) return bad(res, '请先登记属性', 403);
   if (!skillsOf(req.user)) return bad(res, '请先登记技能', 403);
-  if (Object.keys(FIELD).some(x => x !== id && !FIELD[x].main && FIELD[x].started && FIELD[x].members[me])) return bad(res, '你正在外勤任务中', 409);
+  if (r.fun) { if (!r.members[me]) { if (r.started) return bad(res, '本局秘密投票已开始，请等待下一局', 409); r.members[me] = { ready: false, seen: Date.now(), items: [], itemsDone: false }; } r.members[me].seen = Date.now(); return res.json({ room: fieldOut(id) }); }
+  if (Object.keys(FIELD).some(x => x !== id && !FIELD[x].main && !FIELD[x].fun && FIELD[x].started && FIELD[x].members[me])) return bad(res, '你正在外勤任务中', 409);
   if (r.main) { if (!r.members[me]) r.members[me] = { ready: false, seen: Date.now(), items: [], itemsDone: false }; r.members[me].seen = Date.now(); r.members[me].away = false; mainJoin(r, me); return res.json({ room: fieldOut(id) }); }
   if (!r.members[me]) {
     if (r.started) return bad(res, '该舰已启航', 409);
     if (Object.keys(r.members).length >= 8) return bad(res, '该舰已满员', 409);
-    Object.keys(FIELD).forEach(x => { if (x !== id) delete FIELD[x].members[me]; });
+    Object.keys(FIELD).forEach(x => { if (x !== id && !FIELD[x].fun) delete FIELD[x].members[me]; });
     r.members[me] = { ready: false, seen: Date.now(), items: [], itemsDone: false };
   }
   r.members[me].seen = Date.now();
   res.json({ room: fieldOut(id) });
 });
-api.post('/field/rooms/:id/leave', auth, (req, res) => { const r = fieldRoom(req.params.id); if (r && r.main) { { const m0 = r.members[req.user.id], g0 = r.game; if (m0 && g0 && (m0.lootCarry || []).length) { g0.loot = g0.loot || {}; g0.loot[req.user.id] = [...(g0.loot[req.user.id] || []), ...m0.lootCarry]; mainSave(r); } } delete r.members[req.user.id]; mainDrop(r, req.user.id); return res.json({ ok: true }); } if (r && !r.started) { delete r.members[req.user.id]; fieldRoom(req.params.id); } res.json({ ok: true }); });
+api.post('/field/rooms/:id/leave', auth, (req, res) => { const r = fieldRoom(req.params.id); if (r && r.fun) { delete r.members[req.user.id]; if (!r.started) delete r.secrets[req.user.id]; return res.json({ ok: true }); } if (r && r.main) { { const m0 = r.members[req.user.id], g0 = r.game; if (m0 && g0 && (m0.lootCarry || []).length) { g0.loot = g0.loot || {}; g0.loot[req.user.id] = [...(g0.loot[req.user.id] || []), ...m0.lootCarry]; mainSave(r); } } delete r.members[req.user.id]; mainDrop(r, req.user.id); return res.json({ ok: true }); } if (r && !r.started) { delete r.members[req.user.id]; fieldRoom(req.params.id); } res.json({ ok: true }); });
 api.post('/field/rooms/:id/items', auth, (req, res) => {
   const r = fieldRoom(req.params.id), m = r && r.members[req.user.id]; if (!m) return bad(res, '你不在该舰上', 403);
+  if (r.fun) { if (r.started) return bad(res, '游戏已开始', 409); const t = str((req.body || {}).secret, 200); if (!t) return bad(res, '请写下一个秘密'); r.secrets[req.user.id] = t; m.itemsDone = true; m.ready = false; m.seen = Date.now(); return res.json({ room: fieldOut(req.params.id) }); }
   if (r.started && !r.main) return bad(res, '该舰已启航', 409);
   if (r.main && m.itemsDone) return bad(res, '物品已登记，离舰后重新登舰才能更换', 409);
   const cap = carryOf(statsOf(req.user)), list = (Array.isArray(req.body.items) ? req.body.items : []).map(x => typeof x === 'string' ? { name: str(x, 30), temp: true } : { name: str((x || {}).name, 30), temp: !!(x || {}).temp }).filter(x => x.name);
@@ -797,7 +845,7 @@ api.post('/field/rooms/:id/kick', auth, admin, (req, res) => {
 });
 api.get('/field/rooms/:id/log', auth, (req, res) => {
   const r = fieldRoom(req.params.id), g = r && r.game, me = req.user.id; if (!g) return bad(res, '游戏未开始', 409);
-  const all = g.all || g.log; res.json({ log: isAdmin(me) ? all : all.filter(l => !l.hide && (!l.to || l.to === me)) });
+  const all = g.all || g.log; res.json({ log: isAdmin(me) && !r.fun ? all : all.filter(l => !l.hide && (!l.to || l.to === me)) });
 });
 api.post('/field/rooms/:id/unload', auth, admin, (req, res) => {
   const r = fieldRoom(req.params.id), b = req.body || {}, m = r && r.members[b.uid]; if (!m) return bad(res, '该成员不在舰上', 404);
@@ -827,6 +875,16 @@ api.post('/field/rooms/:id/act', auth, once, (req, res) => {
   if (!r.members[me]) return bad(res, '你不在该舰上', 403);
   if (isDead(r, me)) return bad(res, '你已死亡', 403);
   if (madBagLost(r, me)) return bad(res, '你失去了重要的物品，无法行动', 403);
+  if (r.fun) {
+    const info = memberInfo(r, me), target = str(b.target, 24), on = target ? '对【' + target + '】' : ''; let label = '', val = 0;
+    if (b.kind === 'skill') { const L = SKILL_LABELS[b.cat], i = +b.idx; if (!L || !(i >= 0 && i < 3)) return bad(res, '无效技能'); const grp = (info.skills || []).find(x => x.cat === b.cat); label = L[i]; val = grp ? +grp.v[i] : 1; }
+    else if (b.kind === 'stat') { const S = STAT_KEYS.find(x => x[1] === b.key); if (!S) return bad(res, '无效属性'); label = S[0]; val = +((info.stats || {})[b.key]) || 0; }
+    else if (b.kind === 'free') { if (!target) return bad(res, '请填写目标'); gameLog(r, '【' + info.name + '】' + on + '进行了人为干涉', 'sys'); return res.json({ room: fieldOut(req.params.id) }); }
+    else return bad(res, '无效行动');
+    const roll = crypto.randomInt(1, 101), lv = rollLevel(roll, val);
+    gameLog(r, '【' + info.name + '】' + on + '进行【' + label + '】检定\nD100=' + roll + '/' + val + ' ' + lv, 'roll', lv);
+    return res.json({ room: fieldOut(req.params.id) });
+  }
   if (!g.free && g.order[g.turn] !== me) return bad(res, '还没轮到你', 409);
   if ((g.free || r.main) && !(r.gm && Date.now() - r.gm.t < 30000)) return bad(res, '当前没有调度员在线，暂时无法申请行动', 409);
   if (g.state !== 'act') return bad(res, '已有待处理的申请', 409);
@@ -846,8 +904,30 @@ api.post('/field/rooms/:id/say', auth, once, (req, res) => {
   const asGm = !!b.gm && isAdmin(req.user.id); if (!asGm && !r.members[req.user.id]) return bad(res, '你不在该舰上', 403); if (!asGm && ((g.mad || {})[req.user.id] || {}).no === 9) return bad(res, '你无法组织语言', 403); if (!asGm && ((g.mad || {})[req.user.id] || {}).no === 1) return bad(res, '你处于昏迷中，无法 RP', 403); if (!asGm && isDead(r, req.user.id)) return bad(res, '你已死亡', 403);
   const to = asGm && b.to && r.members[b.to] ? b.to : '';
   { const lk = (asGm ? 'gm:' : '') + req.user.id, now = Date.now(), ls = (g.lastSay = g.lastSay || {})[lk]; if (ls && ls.text === text && now - ls.t < 8000) return res.json({ room: fieldOut(req.params.id, isAdmin(req.user.id)) }); g.lastSay[lk] = { text, t: now }; }
-  if (asGm) { const as = GM_AS[b.as] ? b.as : 'narr'; gameLog(r, '【' + GM_AS[as] + '】：' + text, 'gm', as, to ? { to } : null); } else gameLog(r, '【' + memberInfo(r, req.user.id).name + '】：' + text, 'rp', g.order[g.turn] !== req.user.id ? 'off' : '');
+  if (asGm) { const as = GM_AS[b.as] ? b.as : 'narr'; gameLog(r, '【' + GM_AS[as] + '】：' + text, 'gm', as, to ? { to } : null); } else gameLog(r, '【' + memberInfo(r, req.user.id).name + '】：' + text, 'rp', !r.fun && g.order[g.turn] !== req.user.id ? 'off' : '');
   res.json({ room: fieldOut(req.params.id, isAdmin(req.user.id)) });
+});
+api.post('/field/rooms/:id/funstart', auth, once, (req, res) => {
+  const r = fieldRoom(req.params.id); if (!r || !r.fun) return bad(res, '无效房间', 404); if (!r.members[req.user.id]) return bad(res, '你不在娱乐室中', 403);
+  if (r.started) return res.json({ room: fieldOut(req.params.id) });
+  const ms = Object.values(r.members); if (ms.length < FUN_MIN) return bad(res, '至少 ' + FUN_MIN + ' 人才能开始', 409); if (ms.some(x => !x.ready)) return bad(res, '全员准备后才能开始', 409);
+  funStart(r); res.json({ room: fieldOut(req.params.id) });
+});
+api.post('/field/rooms/:id/funvote', auth, once, (req, res) => {
+  const r = fieldRoom(req.params.id), g = r && r.game, me = req.user.id; if (!r || !r.fun || !g || !g.vote) return bad(res, '游戏未开始', 409); if (!r.members[me]) return bad(res, '你不在本局中', 403);
+  const c = g.vote.cur; if (!c) return bad(res, '当前没有进行中的投票', 409);
+  const t = str((req.body || {}).target, 24); if (!t || !getUser(t)) return bad(res, '员工不存在', 404);
+  c.votes[me] = t; res.json({ room: fieldOut(req.params.id) });
+});
+api.post('/field/rooms/:id/fundice', auth, once, (req, res) => {
+  const r = fieldRoom(req.params.id), g = r && r.game, b = req.body || {}; if (!r || !r.fun || !g) return bad(res, '游戏未开始', 409); if (!r.members[req.user.id]) return bad(res, '你不在本局中', 403);
+  const n = Math.floor(+b.n), m = Math.floor(+b.m); if (!(n >= 1 && n <= 10) || !(m >= 2 && m <= 1000)) return bad(res, '骰数 1–10，面数 2–1000');
+  const rs = Array.from({ length: n }, () => crypto.randomInt(1, m + 1)), sum = rs.reduce((a, c) => a + c, 0);
+  gameLog(r, '【' + memberInfo(r, req.user.id).name + '】骰点 ' + n + 'D' + m + '\n' + (n > 1 ? rs.join('+') + ' = ' : '') + sum, 'roll', 'dice'); res.json({ room: fieldOut(req.params.id) });
+});
+api.post('/field/rooms/:id/funnext', auth, admin, once, (req, res) => {
+  const r = fieldRoom(req.params.id), g = r && r.game; if (!r || !r.fun || !g || !g.vote) return bad(res, '游戏未开始', 409); if (g.vote.end) return bad(res, '游戏已结束', 409);
+  if (g.vote.cur) funClose(r); funNext(r); res.json({ room: fieldOut(req.params.id) });
 });
 api.post('/field/rooms/:id/savelog', auth, admin, (req, res) => {
   const r = fieldRoom(req.params.id), g = r && r.game, b = req.body || {}; if (!g) return bad(res, '游戏未开始', 409);
@@ -1017,11 +1097,11 @@ api.post('/field/rooms/:id/again', auth, admin, once, (req, res) => {
 api.post('/field/rooms/:id/end', auth, admin, (req, res) => {
   const r0 = FIELD[req.params.id]; if (!r0) return bad(res, '无效舰船', 404);
   [...new Set([...Object.keys(r0.members), ...Object.keys((r0.game || {}).loot || {})])].forEach(x => { const m = r0.members[x] || {}, L = [...(((r0.game || {}).loot || {})[x] || []), ...(m.lootCarry || [])]; if (m.bot || /^bot/.test(x) || !L.length) return; const uu = getUser(x); if (uu) db.prepare('update users set gained = ? where id = ?').run(JSON.stringify([...listOf(uu, 'gained'), ...L]), x); });
-  if (r0.main) mainClear(); FIELD[req.params.id] = r0.main ? mkMain() : { members: {}, started: false }; fieldBots(req.params.id); res.json({ room: fieldOut(req.params.id, true) });
+  if (r0.main) mainClear(); FIELD[req.params.id] = r0.main ? mkMain() : r0.fun ? mkFun() : { members: {}, started: false }; fieldBots(req.params.id); res.json({ room: fieldOut(req.params.id, true) });
 });
 api.post('/field/rooms/:id/reset', auth, admin, (req, res) => {
   if (!FIELD[req.params.id]) return bad(res, '无效舰船', 404);
-  if (FIELD[req.params.id].main) mainClear(); FIELD[req.params.id] = FIELD[req.params.id].main ? mkMain() : { members: {}, started: false }; fieldBots(req.params.id); res.json({ room: fieldOut(req.params.id, true) });
+  if (FIELD[req.params.id].main) mainClear(); FIELD[req.params.id] = FIELD[req.params.id].main ? mkMain() : FIELD[req.params.id].fun ? mkFun() : { members: {}, started: false }; fieldBots(req.params.id); res.json({ room: fieldOut(req.params.id, true) });
 });
 
 // ---- 一览 · 飞船状态 ----
@@ -1036,7 +1116,7 @@ const SHIP_DEF = () => ({ def: {}, imgs: {}, lost: [], R: 0, legs: [{ r: 6, n: 1
 const shipGet = () => { try { const x = db.prepare("select v from kv where k = 'ship'").get(); return { ...SHIP_DEF(), ...(x ? JSON.parse(x.v) : {}) }; } catch (e) { return SHIP_DEF(); } };
 const defOf = (s, id) => ({ p: 30, s: 30, ana: true, med: true, ...(((s || {}).def || {})[id] || {}) });
 const shipSet = s => db.prepare("insert or replace into kv(k, v) values('ship', ?)").run(JSON.stringify(s));
-const sortieOf = id => { for (const k of Object.keys(FIELD)) { const r = FIELD[k]; if (!r.main && r.started && r.members[id]) return 'sc' + k; } return ''; };
+const sortieOf = id => { for (const k of Object.keys(FIELD)) { const r = FIELD[k]; if (!r.main && !r.fun && r.started && r.members[id]) return 'sc' + k; } return ''; };
 const HABS = ['hab1', 'hab2'], randHab = () => HABS[crypto.randomInt(0, 2)];
 // 首次上线：仅给还没有位置的成员随机分配到两个居住模块（只填空值，永不覆盖已有位置；用数据库标记保证只执行一次）
 if (!db.prepare("select 1 from kv where k = 'ship_seeded'").get()) {
@@ -1047,7 +1127,7 @@ const baseLoc = u => { if (u && SHIP_MODS.includes(u.loc)) return u.loc; if (!u 
 const shipOut = me => ({
   meDead: !!(getUser(me) || {}).dead,
   ship: shipGet(), me: sortieOf(me) || baseLoc(getUser(me)),
-  fleet: Object.keys(FIELD).map(k => ({ id: +k, started: !!FIELD[k].started, ids: FIELD[k].started ? Object.keys(FIELD[k].members) : [] })),
+  fleet: Object.keys(FIELD).filter(k => !FIELD[k].fun).map(k => ({ id: +k, started: !!FIELD[k].started, ids: FIELD[k].started ? Object.keys(FIELD[k].members) : [] })),
   crew: db.prepare('select id, name, dept, loc, dead from users').all().map(u => ({ id: u.id, name: realName(u.id, u.name), dept: u.dept || '', loc: sortieOf(u.id) || baseLoc(u), dead: !!u.dead }))
 });
 api.get('/ship', auth, (req, res) => res.json(shipOut(req.user.id)));
