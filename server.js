@@ -30,7 +30,9 @@ const TITLES = [
   T_('cmt', 'c30', 30, '评论学家', '累计评论 30 条'), T_('cmt', 'c40', 40, '社交神', '累计评论 40 条'),
   T_('secret', 'm1', 0, '月之暗面', ''), T_('secret', 'm2', 0, '1:4:9', ''), T_('secret', 'o4', 0, '罗摩占陀罗', ''), T_('secret', 'o5', 0, '航线：F_W_S', '据说是一位伟大的船长曾经规划过的航线'),
   T_('orbit', 'o1', 0, '模拟器高手', '航线规划培训 · 达成精确航线'), T_('orbit', 'o2', 0, '完成培训', '航线规划培训 · 完成任务'), T_('orbit', 'o3', 0, '我们要去哪?', '航线规划培训 · 偏离原定计划'),
-  T_('ofail', 'of10', 10, '飞船爆破手', '航线模拟失败 10 次'), T_('ofail', 'of20', 20, '舰桥流放者', '航线模拟失败 20 次'), T_('ofail', 'of30', 30, '驾驶部公敌', '航线模拟失败 30 次')
+  T_('ofail', 'of10', 10, '飞船爆破手', '航线模拟失败 10 次'), T_('ofail', 'of20', 20, '舰桥流放者', '航线模拟失败 20 次'), T_('ofail', 'of30', 30, '驾驶部公敌', '航线模拟失败 30 次'),
+  T_('spp', 'sp1', 0, '研究部大胜利', '信号后处理数据库 · 完成 TX-01、TX-02 破译'), T_('spp', 'sp1x', 0, '研究部行不行啊？', '信号后处理数据库 · 以非研究部身份完成 TX-01、TX-02 破译'), T_('spp', 'sp2', 0, '赫尔墨斯的门徒', ''), T_('spp', 'sp3', 0, '归祭', ''), T_('spp', 'sp4', 0, '于莱夫卡斯的悬崖旁', ''),
+  T_('spcal', 'sp6', 11, '失去研究部访问权', '基准校准阶段提交错误超过 10 次'), T_('sptx', 'sp7', 11, '超算算力滥用者', '破译提交错误超过 10 次')
 ];
 
 const db = new Database(path.join(__dirname, 'data.db'));
@@ -61,6 +63,8 @@ addCol('users', 'personal', "text default '[]'");
 addCol('users', 'gained', "text default '[]'");
 addCol('ads', 'once', 'integer default 0');
 addCol('users', 'orbit_fails', 'integer default 0');
+addCol('users', 'sp_cal', 'integer default 0');
+addCol('users', 'sp_tx', 'integer default 0');
 addCol('users', 'position', "text default ''");
 addCol('users', 'gender', "text default ''");
 addCol('users', 'birthday', "text default ''");
@@ -180,6 +184,8 @@ app.use(express.json({ limit: '12mb' }));
 app.use((req, res, next) => { try { convertBody(req.body, 0); } catch (e) {} next(); });
 app.use('/moon', express.static(path.join(__dirname, 'moon'), { maxAge: '1h' }));
 app.use('/orbit', express.static(path.join(__dirname, 'orbit'), { maxAge: '1h' }));
+app.use('/sppdb/fonts', express.static(path.join(__dirname, 'fonts'), { immutable: true, maxAge: '365d', index: false }));
+app.use('/sppdb', express.static(path.join(__dirname, 'sppdb'), { maxAge: '1h' }));
 app.use('/fonts', express.static(path.join(__dirname, 'fonts'), { immutable: true, maxAge: '365d', index: false }));
 app.use('/media', express.static(MEDIA, { immutable: true, maxAge: '365d', index: false, dotfiles: 'deny' }));
 const INDEX = [path.join(__dirname, 'public', 'index.html'), path.join(__dirname, 'index.html')].find(f => fs.existsSync(f));
@@ -579,6 +585,20 @@ api.post('/achv', auth, (req, res) => {
     db.prepare('update users set orbit_fails = coalesce(orbit_fails, 0) + 1 where id = ?').run(req.user.id);
     const u = getUser(req.user.id), have = owned(u), n = u.orbit_fails || 0;
     const fresh = TITLES.filter(t => t.kind === 'ofail' && n >= t.n && !have.includes(t.key));
+    if (fresh.length) db.prepare('update users set titles = ? where id = ?').run(JSON.stringify([...have, ...fresh.map(t => t.key)]), u.id);
+    return res.json({ user: self(getUser(u.id)), newTitles: fresh.map(t => ({ name: t.name, cond: t.cond })) });
+  }
+  const SPC = { spcalfail: ['sp_cal', 'spcal'], sptxfail: ['sp_tx', 'sptx'] }[req.body.key];
+  if (SPC) {
+    db.prepare('update users set ' + SPC[0] + ' = coalesce(' + SPC[0] + ', 0) + 1 where id = ?').run(req.user.id);
+    const u = getUser(req.user.id), have = owned(u), n = u[SPC[0]] || 0, fresh = TITLES.filter(t => t.kind === SPC[1] && n >= t.n && !have.includes(t.key));
+    if (fresh.length) db.prepare('update users set titles = ? where id = ?').run(JSON.stringify([...have, ...fresh.map(t => t.key)]), u.id);
+    return res.json({ user: self(getUser(u.id)), newTitles: fresh.map(t => ({ name: t.name, cond: t.cond })) });
+  }
+  if (['sptx12', 'sptx3', 'spword'].includes(req.body.key)) {
+    const u = getUser(req.user.id), have = owned(u), k = req.body.key;
+    const keys = k === 'sptx3' ? ['sp3'] : k === 'spword' ? ['sp4'] : [u.dept === '研究部' ? 'sp1' : 'sp1x', ...(have.includes('o2') ? [] : ['sp2'])];
+    const fresh = keys.filter(x => !have.includes(x)).map(x => TITLES.find(t => t.key === x)).filter(Boolean);
     if (fresh.length) db.prepare('update users set titles = ? where id = ?').run(JSON.stringify([...have, ...fresh.map(t => t.key)]), u.id);
     return res.json({ user: self(getUser(u.id)), newTitles: fresh.map(t => ({ name: t.name, cond: t.cond })) });
   }
