@@ -170,7 +170,7 @@ const isAdmin = id => ADMINS.includes(id);
 const today = () => new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10).replace(/-/g, '.');
 const deptLabel = d => d ? (d.endsWith('部') ? d : d + '部') : '';
 const owned = u => { try { return JSON.parse(u.titles || '[]'); } catch (e) { return []; } };
-const wall = u => { const o = owned(u); return [{ key: 'base', name: deptLabel(u.dept) + (u.position || '员工'), cond: '注册即获得', owned: true }, ...TITLES.map(t => ({ key: t.key, name: t.name, cond: t.cond, owned: o.includes(t.key) }))]; };
+const wall = u => { const o = owned(u); return [{ key: 'base', name: deptLabel(u.dept) + (u.position || '员工'), cond: '注册即获得', owned: true }, ...TITLES.filter(t => o.includes(t.key) || !(t.key === 'sp1' && u.dept !== '研究部') && !(t.key === 'sp1x' && u.dept === '研究部')).map(t => ({ key: t.key, name: t.name, cond: t.cond, owned: o.includes(t.key) }))]; };
 const pub = u => {
   const w = wall(u), b = w.find(t => t.owned && t.key === u.badge) || w[0];
   return { id: u.id, name: u.name, realName: realName(u.id, u.name), avatar: u.avatar || '', createdAt: u.created_at, dept: u.dept || '', position: u.position || '员工', gender: u.gender || '', birthday: (u.birthday || '').slice(-5), age: u.age || '', isAdmin: isAdmin(u.id), badge: b.key, badgeName: b.name, titles: w };
@@ -636,6 +636,8 @@ FIELD[3] = mkMain();
 const FUN_ID = '9', FUN_MIN = 3, FUN_MAX = 12, FUN_SEC = 300000, FUN_GAP = 6000;
 const mkFun = () => ({ members: {}, started: false, fun: true, secrets: {} });
 FIELD[FUN_ID] = mkFun();
+const LIAR_ID = '10', mkLiar = () => ({ members: {}, started: false, fun: true, liar: true, secrets: {} });
+FIELD[LIAR_ID] = mkLiar();
 // 主舰记录持久化：服务器重启后仍保留完整聊天记录与轮次
 let mainSaveT = null;
 function mainSave(r) { clearTimeout(mainSaveT); mainSaveT = setTimeout(() => { try { const g = r.game; db.prepare("insert or replace into kv(k, v) values('main_log', ?)").run(JSON.stringify({ all: g.all || [], seq: g.seq || 0, round: g.round || 1, fx: g.fx || {} })); } catch (e) {} }, 2000); }
@@ -711,12 +713,45 @@ function gameStart(r) {
   gameLog(r, '行动顺序：' + ids.map(x => memberInfo(r, x).name).join(' → '), 'sys'); gameTurnLog(r);
 }
 function funRoom(id, r, now) {
-  if (!r.started) { Object.keys(r.members).forEach(x => { if (now - r.members[x].seen > 20000) { delete r.members[x]; delete r.secrets[x]; } }); const ms = Object.values(r.members), go = ms.length >= FUN_MIN && ms.every(x => x.ready); if (!go) r.cd = 0; else if (!r.cd) r.cd = now + 10000; else if (now >= r.cd) { r.cd = 0; funStart(r); } return r; }
-  if (!Object.keys(r.members).some(x => now - r.members[x].seen < 600000)) { FIELD[id] = mkFun(); return FIELD[id]; }
+  if (!r.started) { Object.keys(r.members).forEach(x => { if (now - r.members[x].seen > 20000) { delete r.members[x]; delete r.secrets[x]; } }); const ms = Object.values(r.members), go = ms.length >= (r.liar ? 2 : FUN_MIN) && ms.every(x => x.ready); if (!go) r.cd = 0; else if (!r.cd) r.cd = now + 10000; else if (now >= r.cd) { r.cd = 0; if (r.liar) LZ.start(r); else funStart(r); } return r; }
+  if (!Object.keys(r.members).some(x => now - r.members[x].seen < 600000)) { FIELD[id] = r.liar ? mkLiar() : mkFun(); return FIELD[id]; }
   funTick(r); return r;
 }
 const FUN_RES = { none: '无人猜对 · 无人胜利', author: '猜对少于半数 · 出题人胜利', guess: '猜对多于半数 · 猜题人胜利', tie: '猜对恰好半数 · 平局' };
 const funName = x => { const u = getUser(x); return u ? realName(x, u.name) : x; };
+const LIAR = (log, nm, rnd) => {
+  const SL = ['top', 'bot', 'acc'], SN = { top: '上装', bot: '下装', acc: '配饰' }, bt = b => b.n + ' 个 ' + b.f;
+  const deal = r => { const L = r.game.liar; L.dice = {}; L.alive.forEach(x => { L.dice[x] = Array.from({ length: 5 }, () => rnd(6) + 1); }); L.bid = null; L.wild = false; L.round++; log(r, '第 ' + L.round + ' 轮 · 全员重新掷骰 · 场上共 ' + L.alive.length * 5 + ' 颗\n由【' + nm(L.alive[L.turn]) + '】开始', 'sys'); };
+  const finish = r => { const L = r.game.liar, w = L.alive[0], rank = [...L.alive, ...L.out.slice().reverse()]; L.end = true; L.bid = null;
+    log(r, '吹牛骰结束 · 胜者【' + (w ? nm(w) : '无') + '】\n' + rank.map((u, k) => (k + 1) + '.【' + nm(u) + '】' + ((L.worn[u] || []).map(i => i.name).join('、') || '正常衣物')).join('\n'), 'funres', 'end'); };
+  const draw = (L, x) => { const w = L.worn[x] = L.worn[x] || [], has = new Set(w.map(i => i.slot)); let c = L.pool.filter(i => !has.has(i.slot) && i.owner !== x); if (!c.length) c = L.pool.filter(i => !has.has(i.slot)); if (!c.length) c = L.pool.slice(); if (!c.length) return null; const it = c[rnd(c.length)]; L.pool.splice(L.pool.indexOf(it), 1); w.push(it); return it; };
+  const lose = (r, x, head) => { const L = r.game.liar; L.last = { round: L.round, bid: L.bid ? { ...L.bid } : null, dice: L.alive.map(u => ({ uid: u, d: L.dice[u].slice() })), loser: x };
+    const it = draw(L, x), n = (L.worn[x] || []).length, out = n >= 3; L.last.item = it; L.last.out = out; (L.hist = L.hist || []).push(L.last);
+    log(r, head + '\n输家【' + nm(x) + '】' + (it ? '抽到【' + nm(it.owner) + '】的' + SN[it.slot] + '「' + it.name + '」并穿上' : '衣物池已空') + ' · ' + n + '/3' + (out ? '\n【' + nm(x) + '】穿满三件 · 淘汰' : ''), 'funres', out ? 'author' : '');
+    let i = L.alive.indexOf(x); if (out) { L.alive.splice(i, 1); L.out.push(x); if (i >= L.alive.length) i = 0; } L.turn = i;
+    if (L.alive.length <= 1) return finish(r); deal(r); };
+  const start = r => { const ids = Object.keys(r.members); for (let i = ids.length - 1; i > 0; i--) { const j = rnd(i + 1); [ids[i], ids[j]] = [ids[j], ids[i]]; }
+    const pool = []; ids.forEach(x => { const c = r.secrets[x] || {}; SL.forEach(k => { if (c[k]) pool.push({ slot: k, name: c[k], owner: x }); }); });
+    r.started = true; r.game = { order: ids, turn: 0, round: 1, state: 'act', pending: null, log: [], seq: 0, hp: {}, mad: {}, pendMad: {}, hurt: {}, hit: {}, free: true, liar: { alive: ids.slice(), all: ids.slice(), out: [], pool, worn: {}, dice: {}, bid: null, wild: true, turn: 0, round: 0, end: false, last: null } };
+    log(r, '吹牛骰\n每人 5 颗骰子，轮流叫「场上至少有 N 个 X 点」，只能往上叫：个数更多，或个数相同、点数更大\n不信就「开」：数量够，开的人输；不够，叫的人输\n输家从衣物池抽一件穿上，穿满三件即淘汰，留到最后的人获胜', 'sys');
+    deal(r); };
+  const bid = (r, x, n, f) => { const L = r.game.liar; if (L.end) return '游戏已结束'; if (L.alive[L.turn] !== x) return '还没轮到你'; n = Math.floor(+n); f = Math.floor(+f);
+    if (!(f >= 1 && f <= 6) || !(n >= 1 && n <= L.alive.length * 5)) return '叫法无效'; const p = L.bid; if (p && !(n > p.n || (n === p.n && f > p.f))) return '必须比【' + bt(p) + '】更大';
+    if (n === 1 && L.used1) return '「1 个」整局只能叫一次，已经被叫过了'; if (n === 1) L.used1 = true; L.bid = { by: x, n, f }; log(r, '【' + nm(x) + '】：' + bt(L.bid), 'sys'); L.turn = (L.turn + 1) % L.alive.length; return ''; };
+  const open = (r, x) => { const L = r.game.liar; if (L.end) return '游戏已结束'; if (L.alive[L.turn] !== x) return '还没轮到你'; const p = L.bid; if (!p) return '还没有人叫，先叫一手';
+    const k = L.alive.reduce((s, u) => s + L.dice[u].filter(d => d === p.f || (L.wild && p.f !== 1 && d === 1)).length, 0), ok = k >= p.n;
+    lose(r, ok ? x : p.by, '【' + nm(x) + '】开【' + nm(p.by) + '】的 ' + bt(p) + '\n亮骰：' + L.alive.map(u => nm(u) + ' ' + L.dice[u].join(' ')).join(' / ') + '\n场上共 ' + k + ' 个 ' + p.f + (L.wild && p.f !== 1 ? '（含万能 1）' : '') + ' · ' + (ok ? '场上该骰子数量更多' : '场上该骰子数量更少')); return ''; };
+  const drop = (r, x) => { const L = r.game && r.game.liar; if (!L || L.end) return; const i = L.alive.indexOf(x); if (i < 0) return; L.alive.splice(i, 1); L.out.push(x); log(r, '【' + nm(x) + '】离开了牌桌', 'sys');
+    if (L.alive.length <= 1) return finish(r); L.turn = i % L.alive.length; deal(r); };
+  const out = (r, me) => { const L = r.game && r.game.liar; if (!L) return null; const cur = L.alive[L.turn], mine = L.alive.includes(me);
+    return { round: L.round, used1: !!L.used1, end: L.end, winner: L.end && L.alive[0] ? nm(L.alive[0]) : '', wild: L.wild, total: L.alive.length * 5, pool: L.pool.length,
+      bid: L.bid ? { name: nm(L.bid.by), n: L.bid.n, f: L.bid.f } : null, turnName: L.end ? '' : nm(cur), myTurn: !L.end && cur === me, alive: mine, mine: mine && L.dice[me] ? L.dice[me].slice() : [],
+      players: L.all.map(u => ({ uid: u, name: nm(u), out: !L.alive.includes(u), turn: !L.end && u === cur, worn: (L.worn[u] || []).map(i => ({ sl: SN[i.slot], name: i.name, from: nm(i.owner) })) })),
+      hist: (L.hist || []).slice().reverse().map(h => ({ round: h.round, loser: nm(h.loser), bid: h.bid ? nm(h.bid.by) + ' 叫 ' + bt(h.bid) : '', item: h.item ? h.item.name : '', out: !!h.out, dice: h.dice.map(e => ({ name: nm(e.uid), d: e.d.join(' ') })) })), last: L.last ? { round: L.last.round, loser: nm(L.last.loser), bid: L.last.bid ? nm(L.last.bid.by) + ' 叫 ' + bt(L.last.bid) : '', item: L.last.item ? L.last.item.name : '', out: !!L.last.out, dice: L.last.dice.map(e => ({ name: nm(e.uid), d: e.d.join(' ') })) } : null };
+  };
+  return { start, bid, open, drop, out };
+};
+const LZ = LIAR((r, t, k, lv, ex) => gameLog(r, t, k, lv, ex), funName, n => crypto.randomInt(0, n));
 function funTick(r) {}
 function funNext(r) {
   const g = r.game, V = g.vote; V.i++; if (V.i >= V.q.length) return funEnd(r);
@@ -755,7 +790,7 @@ function gameOut(r) { const g = r.game; if (!g) return null; return { mapSeq: (g
 function fieldOut(id, full) {
   const r = fieldRoom(id);
   const now = Date.now();
-  return { id: +id, max: r.main || r.fun ? 0 : 8, main: !!r.main, fun: !!r.fun, cd: r.fun && r.cd ? Math.max(0, r.cd - now) : 0, vote: r.fun ? funOut(r, CUR_VIEWER) : null, started: r.started, dispatcher: r.gm && ((r.started && !r.main) || now - r.gm.t < 30000) ? dispLabel(r.gm.id) || r.gm.id : '', members: Object.keys(r.members).filter(x => !(r.main && r.members[x].away)).map(x => {
+  return { id: +id, max: r.main || r.fun ? 0 : 8, main: !!r.main, fun: !!r.fun, cd: r.fun && r.cd ? Math.max(0, r.cd - now) : 0, vote: r.fun && !r.liar ? funOut(r, CUR_VIEWER) : null, liarMode: !!r.liar, lz: r.liar ? LZ.out(r, CUR_VIEWER) : null, started: r.started, dispatcher: r.gm && ((r.started && !r.main) || now - r.gm.t < 30000) ? dispLabel(r.gm.id) || r.gm.id : '', members: Object.keys(r.members).filter(x => !(r.main && r.members[x].away)).map(x => {
     const m = r.members[x], b = m.bot, u = b ? null : getUser(x);
     const mi = mGet(r, x) || {}, gg = r.game || {};
     const o = { id: x, hp: hpNow(mi), hpMax: hpMaxOf(mi.stats), mad: (gg.mad || {})[x] || null, hit: (gg.hit || {})[x] || 0, loot: (gg.loot || {})[x] || [], name: b ? b.name : realName(x, u && u.name), avatar: u ? u.avatar || '' : '', ready: !!m.ready, itemsDone: !!m.itemsDone, items: m.items || [], temps: m.temps || [], lootCarry: m.lootCarry || [], bot: !!b, dispName: dispLabel(x), sane: b ? b.sane !== false : !!u && u.sane !== 0, stats: b ? b.stats : u ? statsOf(u) : null, skills: b ? b.skills : u ? skillsOf(u) : null, dept: b ? b.dept : u ? u.dept || '' : '', idCard: u ? u.idcard || '' : '', secret: r.fun && !r.started && x === CUR_VIEWER ? (r.secrets || {})[x] || '' : '' };
@@ -828,7 +863,7 @@ api.post('/field/rooms/:id/join', auth, (req, res) => {
   if (!r.main && shipGet().lost.includes('sc' + id)) return bad(res, '该先锋舰已失联，无法进入', 409);
   if (!hasStats(statsOf(req.user))) return bad(res, '请先登记属性', 403);
   if (!skillsOf(req.user)) return bad(res, '请先登记技能', 403);
-  if (r.fun) { if (!r.members[me]) { if (r.started) return bad(res, '本局秘密投票已开始，请等待下一局', 409); r.members[me] = { ready: false, seen: Date.now(), items: [], itemsDone: false }; } r.members[me].seen = Date.now(); return res.json({ room: fieldOut(id) }); }
+  if (r.fun) { if (!r.members[me]) { if (r.started) return bad(res, '本局游戏已开始，请等待下一局', 409); r.members[me] = { ready: false, seen: Date.now(), items: [], itemsDone: false }; } r.members[me].seen = Date.now(); return res.json({ room: fieldOut(id) }); }
   if (Object.keys(FIELD).some(x => x !== id && !FIELD[x].main && !FIELD[x].fun && FIELD[x].started && FIELD[x].members[me])) return bad(res, '你正在外勤任务中', 409);
   if (r.main) { if (!r.members[me]) r.members[me] = { ready: false, seen: Date.now(), items: [], itemsDone: false }; r.members[me].seen = Date.now(); r.members[me].away = false; mainJoin(r, me); return res.json({ room: fieldOut(id) }); }
   if (!r.members[me]) {
@@ -840,9 +875,10 @@ api.post('/field/rooms/:id/join', auth, (req, res) => {
   r.members[me].seen = Date.now();
   res.json({ room: fieldOut(id) });
 });
-api.post('/field/rooms/:id/leave', auth, (req, res) => { const r = fieldRoom(req.params.id); if (r && r.fun) { delete r.members[req.user.id]; if (!r.started) delete r.secrets[req.user.id]; return res.json({ ok: true }); } if (r && r.main) { { const m0 = r.members[req.user.id], g0 = r.game; if (m0 && g0 && (m0.lootCarry || []).length) { g0.loot = g0.loot || {}; g0.loot[req.user.id] = [...(g0.loot[req.user.id] || []), ...m0.lootCarry]; mainSave(r); } } delete r.members[req.user.id]; mainDrop(r, req.user.id); return res.json({ ok: true }); } if (r && !r.started) { delete r.members[req.user.id]; fieldRoom(req.params.id); } res.json({ ok: true }); });
+api.post('/field/rooms/:id/leave', auth, (req, res) => { const r = fieldRoom(req.params.id); if (r && r.fun) { if (r.liar && r.started) LZ.drop(r, req.user.id); delete r.members[req.user.id]; if (!r.started) delete r.secrets[req.user.id]; return res.json({ ok: true }); } if (r && r.main) { { const m0 = r.members[req.user.id], g0 = r.game; if (m0 && g0 && (m0.lootCarry || []).length) { g0.loot = g0.loot || {}; g0.loot[req.user.id] = [...(g0.loot[req.user.id] || []), ...m0.lootCarry]; mainSave(r); } } delete r.members[req.user.id]; mainDrop(r, req.user.id); return res.json({ ok: true }); } if (r && !r.started) { delete r.members[req.user.id]; fieldRoom(req.params.id); } res.json({ ok: true }); });
 api.post('/field/rooms/:id/items', auth, (req, res) => {
   const r = fieldRoom(req.params.id), m = r && r.members[req.user.id]; if (!m) return bad(res, '你不在该舰上', 403);
+  if (r.fun && r.liar) { if (r.started) return bad(res, '游戏已开始', 409); const cb = (req.body || {}).clothes || {}, cl = { top: str(cb.top, 24), bot: str(cb.bot, 24), acc: str(cb.acc, 24) }; if (!cl.top || !cl.bot || !cl.acc) return bad(res, '请填写上装、下装和配饰'); r.secrets[req.user.id] = cl; m.itemsDone = true; m.ready = false; m.seen = Date.now(); return res.json({ room: fieldOut(req.params.id) }); }
   if (r.fun) { if (r.started) return bad(res, '游戏已开始', 409); const t = str((req.body || {}).secret, 200); if (!t) return bad(res, '请写下一个秘密'); r.secrets[req.user.id] = t; m.itemsDone = true; m.ready = false; m.seen = Date.now(); return res.json({ room: fieldOut(req.params.id) }); }
   if (r.started && !r.main) return bad(res, '该舰已启航', 409);
   if (r.main && m.itemsDone) return bad(res, '物品已登记，离舰后重新登舰才能更换', 409);
@@ -946,10 +982,14 @@ api.post('/field/rooms/:id/funvote', auth, once, (req, res) => {
   c.votes[me] = t; res.json({ room: fieldOut(req.params.id) });
 });
 api.post('/field/rooms/:id/fundice', auth, once, (req, res) => {
-  const r = fieldRoom(req.params.id), g = r && r.game, b = req.body || {}; if (!r || !r.fun || !g) return bad(res, '游戏未开始', 409); if (!r.members[req.user.id]) return bad(res, '你不在本局中', 403);
+  const r = fieldRoom(req.params.id), g = r && r.game, b = req.body || {}; if (!r || !r.fun || !g) return bad(res, '游戏未开始', 409); if (!r.members[req.user.id]) return bad(res, '你不在本局中', 403); if (r.liar && g.liar && !g.liar.alive.includes(req.user.id)) return bad(res, '你已淘汰，只能发言', 403);
   const n = Math.floor(+b.n), m = Math.floor(+b.m); if (!(n >= 1 && n <= 10) || !(m >= 2 && m <= 1000)) return bad(res, '骰数 1–10，面数 2–1000');
   const rs = Array.from({ length: n }, () => crypto.randomInt(1, m + 1)), sum = rs.reduce((a, c) => a + c, 0);
   gameLog(r, '【' + memberInfo(r, req.user.id).name + '】骰点 ' + n + 'D' + m + '\n' + (n > 1 ? rs.join('+') + ' = ' : '') + sum, 'roll', 'dice'); res.json({ room: fieldOut(req.params.id) });
+});
+for (const act of ['liarbid', 'liaropen']) api.post('/field/rooms/:id/' + act, auth, once, (req, res) => {
+  const r = fieldRoom(req.params.id), b = req.body || {}; if (!r || !r.liar || !r.game || !r.game.liar) return bad(res, '游戏未开始', 409); if (!r.members[req.user.id]) return bad(res, '你不在本局中', 403);
+  const e = act === 'liarbid' ? LZ.bid(r, req.user.id, b.n, b.f) : LZ.open(r, req.user.id); if (e) return bad(res, e, 409); res.json({ room: fieldOut(req.params.id) });
 });
 api.post('/field/rooms/:id/funnext', auth, admin, once, (req, res) => {
   const r = fieldRoom(req.params.id), g = r && r.game; if (!r || !r.fun || !g || !g.vote) return bad(res, '游戏未开始', 409); if (g.vote.end) return bad(res, '游戏已结束', 409);
@@ -1123,11 +1163,11 @@ api.post('/field/rooms/:id/again', auth, admin, once, (req, res) => {
 api.post('/field/rooms/:id/end', auth, admin, (req, res) => {
   const r0 = FIELD[req.params.id]; if (!r0) return bad(res, '无效舰船', 404);
   [...new Set([...Object.keys(r0.members), ...Object.keys((r0.game || {}).loot || {})])].forEach(x => { const m = r0.members[x] || {}, L = [...(((r0.game || {}).loot || {})[x] || []), ...(m.lootCarry || [])]; if (m.bot || /^bot/.test(x) || !L.length) return; const uu = getUser(x); if (uu) db.prepare('update users set gained = ? where id = ?').run(JSON.stringify([...listOf(uu, 'gained'), ...L]), x); });
-  if (r0.main) mainClear(); FIELD[req.params.id] = r0.main ? mkMain() : r0.fun ? mkFun() : { members: {}, started: false }; fieldBots(req.params.id); res.json({ room: fieldOut(req.params.id, true) });
+  if (r0.main) mainClear(); FIELD[req.params.id] = r0.main ? mkMain() : r0.liar ? mkLiar() : r0.fun ? mkFun() : { members: {}, started: false }; fieldBots(req.params.id); res.json({ room: fieldOut(req.params.id, true) });
 });
 api.post('/field/rooms/:id/reset', auth, admin, (req, res) => {
   if (!FIELD[req.params.id]) return bad(res, '无效舰船', 404);
-  if (FIELD[req.params.id].main) mainClear(); FIELD[req.params.id] = FIELD[req.params.id].main ? mkMain() : FIELD[req.params.id].fun ? mkFun() : { members: {}, started: false }; fieldBots(req.params.id); res.json({ room: fieldOut(req.params.id, true) });
+  if (FIELD[req.params.id].main) mainClear(); FIELD[req.params.id] = FIELD[req.params.id].main ? mkMain() : FIELD[req.params.id].liar ? mkLiar() : FIELD[req.params.id].fun ? mkFun() : { members: {}, started: false }; fieldBots(req.params.id); res.json({ room: fieldOut(req.params.id, true) });
 });
 
 // ---- 一览 · 飞船状态 ----
