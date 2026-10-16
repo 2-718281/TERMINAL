@@ -31,7 +31,7 @@ const TITLES = [
   T_('secret', 'm1', 0, '月之暗面', ''), T_('secret', 'm2', 0, '1:4:9', ''), T_('secret', 'o4', 0, '罗摩占陀罗', ''), T_('secret', 'o5', 0, '航线：F_W_S', '据说是一位伟大的船长曾经规划过的航线'),
   T_('orbit', 'o1', 0, '模拟器高手', '航线规划培训 · 达成精确航线'), T_('orbit', 'o2', 0, '完成培训', '航线规划培训 · 完成任务'), T_('orbit', 'o3', 0, '我们要去哪?', '航线规划培训 · 偏离原定计划'),
   T_('ofail', 'of10', 10, '飞船爆破手', '航线模拟失败 10 次'), T_('ofail', 'of20', 20, '舰桥流放者', '航线模拟失败 20 次'), T_('ofail', 'of30', 30, '驾驶部公敌', '航线模拟失败 30 次'),
-  T_('spp', 'sp1', 0, '研究部大胜利', '信号后处理数据库 · 完成 TX-01、TX-02 破译'), T_('spp', 'sp1x', 0, '研究部行不行啊？', '信号后处理数据库 · 以非研究部身份完成 TX-01、TX-02 破译'), T_('spp', 'sp2', 0, '赫尔墨斯的门徒', ''), T_('spp', 'sp3', 0, '归祭', ''), T_('spp', 'sp4', 0, '于莱夫卡斯的悬崖旁', ''),
+  T_('spp', 'sp1', 0, '研究部大胜利', '信号处理数据库 · 完成 TX-01、TX-02 破译'), T_('spp', 'sp1x', 0, '研究部行不行啊？', '信号处理数据库 · 以非研究部身份完成 TX-01、TX-02 破译'), T_('spp', 'sp2', 0, '赫尔墨斯的门徒', ''), T_('spp', 'sp3', 0, '归祭', ''), T_('spp', 'sp4', 0, '方程末端的红发', ''),
   T_('spcal', 'sp6', 11, '失去研究部访问权', '基准校准阶段提交错误超过 10 次'), T_('sptx', 'sp7', 11, '超算算力滥用者', '破译提交错误超过 10 次')
 ];
 
@@ -309,6 +309,12 @@ api.post('/announcements', auth, admin, (req, res) => {
   const title = str(req.body.title, 60), body = str(req.body.body, 1000);
   if (!title) return bad(res, '请输入公告标题');
   db.prepare('insert into announcements(title, date, body, author) values(?, ?, ?, ?)').run(title, today(), body, req.user.name);
+  res.json({ items: annList() });
+});
+api.patch('/announcements/:id', auth, admin, (req, res) => {
+  const a = db.prepare('select id from announcements where id = ?').get(+req.params.id); if (!a) return bad(res, '公告不存在', 404);
+  const title = str(req.body.title, 60), body = str(req.body.body, 1000); if (!title) return bad(res, '请输入公告标题');
+  db.prepare('update announcements set title = ?, body = ? where id = ?').run(title, body, a.id);
   res.json({ items: annList() });
 });
 api.delete('/announcements/:id', auth, admin, (req, res) => {
