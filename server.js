@@ -31,7 +31,7 @@ const TITLES = [
   T_('secret', 'm1', 0, '月之暗面', ''), T_('secret', 'm2', 0, '1:4:9', ''), T_('secret', 'o4', 0, '罗摩占陀罗', ''), T_('secret', 'o5', 0, '航线：F_W_S', '据说是一位伟大的船长曾经规划过的航线'),
   T_('orbit', 'o1', 0, '模拟器高手', '航线规划培训 · 达成精确航线'), T_('orbit', 'o2', 0, '完成培训', '航线规划培训 · 完成任务'), T_('orbit', 'o3', 0, '我们要去哪?', '航线规划培训 · 偏离原定计划'),
   T_('ofail', 'of10', 10, '飞船爆破手', '航线模拟失败 10 次'), T_('ofail', 'of20', 20, '舰桥流放者', '航线模拟失败 20 次'), T_('ofail', 'of30', 30, '驾驶部公敌', '航线模拟失败 30 次'),
-  T_('spp', 'sp1', 0, '研究部大胜利', '信号处理数据库 · 完成 TX-01、TX-02 破译'), T_('spp', 'sp1x', 0, '研究部行不行啊？', '信号处理数据库 · 以非研究部身份完成 TX-01、TX-02 破译'), T_('spp', 'sp2', 0, '赫尔墨斯的门徒', ''), T_('spp', 'sp3', 0, '归祭', ''), T_('spp', 'sp4', 0, '方程末端的红发', ''),
+  T_('spp', 'sp1', 0, '研究部大胜利', '信号处理数据库 · 完成 TX-01、TX-02 破译'), T_('spp', 'sp1x', 0, '研究部行不行啊？', '信号处理数据库 · 以非研究部身份完成 TX-01、TX-02 破译'), T_('spp', 'sp2', 0, '赫尔墨斯的门徒', '信号处理数据库 · 未完成基准校准即完成 TX-01、TX-02 破译与全部索引对应'), T_('spp', 'sp3', 0, '归祭', ''), T_('spp', 'sp4', 0, '方程末端的红发', ''),
   T_('spcal', 'sp6', 11, '失去研究部访问权', '基准校准阶段提交错误超过 10 次'), T_('sptx', 'sp7', 11, '超算算力滥用者', '破译提交错误超过 10 次')
 ];
 
@@ -601,9 +601,9 @@ api.post('/achv', auth, (req, res) => {
     if (fresh.length) db.prepare('update users set titles = ? where id = ?').run(JSON.stringify([...have, ...fresh.map(t => t.key)]), u.id);
     return res.json({ user: self(getUser(u.id)), newTitles: fresh.map(t => ({ name: t.name, cond: t.cond })) });
   }
-  if (['sptx12', 'sptx3', 'spword'].includes(req.body.key)) {
+  if (['sptx12', 'sptx3', 'spword', 'sphermes'].includes(req.body.key)) {
     const u = getUser(req.user.id), have = owned(u), k = req.body.key;
-    const keys = k === 'sptx3' ? ['sp3'] : k === 'spword' ? ['sp4'] : [u.dept === '研究部' ? 'sp1' : 'sp1x', ...(have.includes('o2') ? [] : ['sp2'])];
+    const keys = k === 'sptx3' ? ['sp3'] : k === 'spword' ? ['sp4'] : k === 'sphermes' ? ['sp2'] : [u.dept === '研究部' ? 'sp1' : 'sp1x'];
     const fresh = keys.filter(x => !have.includes(x)).map(x => TITLES.find(t => t.key === x)).filter(Boolean);
     if (fresh.length) db.prepare('update users set titles = ? where id = ?').run(JSON.stringify([...have, ...fresh.map(t => t.key)]), u.id);
     return res.json({ user: self(getUser(u.id)), newTitles: fresh.map(t => ({ name: t.name, cond: t.cond })) });
