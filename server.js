@@ -638,6 +638,8 @@ const mkFun = () => ({ members: {}, started: false, fun: true, secrets: {} });
 FIELD[FUN_ID] = mkFun();
 const LIAR_ID = '10', mkLiar = () => ({ members: {}, started: false, fun: true, liar: true, secrets: {} });
 FIELD[LIAR_ID] = mkLiar();
+const BJ_ID = '11', mkBJ = () => ({ members: {}, started: false, fun: true, bj: true, secrets: {} });
+FIELD[BJ_ID] = mkBJ();
 // 主舰记录持久化：服务器重启后仍保留完整聊天记录与轮次
 let mainSaveT = null;
 function mainSave(r) { clearTimeout(mainSaveT); mainSaveT = setTimeout(() => { try { const g = r.game; db.prepare("insert or replace into kv(k, v) values('main_log', ?)").run(JSON.stringify({ all: g.all || [], seq: g.seq || 0, round: g.round || 1, fx: g.fx || {} })); } catch (e) {} }, 2000); }
@@ -713,9 +715,9 @@ function gameStart(r) {
   gameLog(r, '行动顺序：' + ids.map(x => memberInfo(r, x).name).join(' → '), 'sys'); gameTurnLog(r);
 }
 function funRoom(id, r, now) {
-  if (!r.started) { Object.keys(r.members).forEach(x => { if (now - r.members[x].seen > 20000) { delete r.members[x]; delete r.secrets[x]; } }); const ms = Object.values(r.members), go = ms.length >= (r.liar ? 2 : FUN_MIN) && ms.every(x => x.ready); if (!go) r.cd = 0; else if (!r.cd) r.cd = now + 10000; else if (now >= r.cd) { r.cd = 0; if (r.liar) LZ.start(r); else funStart(r); } return r; }
-  if (!Object.keys(r.members).some(x => now - r.members[x].seen < 600000)) { FIELD[id] = r.liar ? mkLiar() : mkFun(); return FIELD[id]; }
-  funTick(r); return r;
+  if (!r.started) { Object.keys(r.members).forEach(x => { if (now - r.members[x].seen > 20000) { delete r.members[x]; delete r.secrets[x]; } }); const ms = Object.values(r.members), go = ms.length >= (r.liar ? 2 : r.bj ? 1 : FUN_MIN) && ms.every(x => x.ready); if (!go) r.cd = 0; else if (!r.cd) r.cd = now + 10000; else if (now >= r.cd) { r.cd = 0; if (r.liar) LZ.start(r); else if (r.bj) BJ.start(r, now); else funStart(r); } return r; }
+  if (!Object.keys(r.members).some(x => now - r.members[x].seen < 600000)) { FIELD[id] = r.liar ? mkLiar() : r.bj ? mkBJ() : mkFun(); return FIELD[id]; }
+  if (r.bj) BJ.tick(r, now); funTick(r); return r;
 }
 const FUN_RES = { none: '无人猜对 · 无人胜利', author: '猜对少于半数 · 出题人胜利', guess: '猜对多于半数 · 猜题人胜利', tie: '猜对恰好半数 · 平局' };
 const funName = x => { const u = getUser(x); return u ? realName(x, u.name) : x; };
@@ -752,6 +754,60 @@ const LIAR = (log, nm, rnd) => {
   return { start, bid, open, drop, out };
 };
 const LZ = LIAR((r, t, k, lv, ex) => gameLog(r, t, k, lv, ex), funName, n => crypto.randomInt(0, n));
+const BLACKJACK = (log, nm, rnd) => {
+  const BETS = [10, 20, 50], T_BET = 15000, T_ACT = 20000, T_GAP = 6000, SU = ['♠', '♥', '♦', '♣'], RK = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+  const val = h => { let s = 0, a = 0; h.forEach(c => { if (c.r === 'A') { a++; s++; } else s += c.r === 'J' || c.r === 'Q' || c.r === 'K' ? 10 : +c.r; }); const soft = a > 0 && s + 10 <= 21; return { s: soft ? s + 10 : s, soft }; };
+  const isBJ = h => h.length === 2 && val(h).s === 21, cs = h => h.map(c => c.r + c.s).join(' '), sg = k => k > 0 ? '+' + k : k < 0 ? String(k) : '±0';
+  const shoe = () => { const d = []; for (let k = 0; k < 2; k++) SU.forEach(s => RK.forEach(r => d.push({ r, s }))); for (let i = d.length - 1; i > 0; i--) { const j = rnd(i + 1); [d[i], d[j]] = [d[j], d[i]]; } return d; };
+  const bot = (r, x) => !!(r.members[x] && r.members[x].bot);
+  const hitc = (B, x) => { B.hands[x].push(B.deck.pop()); const v = val(B.hands[x]).s; if (v > 21) B.st[x] = 'bust'; else if (v === 21) B.st[x] = 'stand'; };
+  const betPhase = (r, now) => { const B = r.game.bj; B.round++; B.phase = 'bet'; B.t1 = now + T_BET; B.bets = {}; B.hands = {}; B.st = {}; B.dealer = []; B.res = {}; B.dbl = {}; B.dec = {}; B.sub = 0; B.act = {}; log(r, '第 ' + B.round + ' 局 · 请在 ' + T_BET / 1000 + ' 秒内下注', 'turn'); };
+  const finish = r => { const B = r.game.bj; B.end = true; B.phase = 'end'; const rank = B.all.slice().sort((a, b) => B.pts[b] - B.pts[a]); log(r, '二十一点结束\n' + rank.map((u, k) => (k + 1) + '.【' + nm(u) + '】' + B.pts[u] + ' 积分').join('\n'), 'funres', 'end'); };
+  const settle = (r, now) => { const B = r.game.bj;
+    B.alive.forEach(x => { if (B.st[x] === 'play') B.st[x] = 'stand'; });
+    if (B.alive.some(x => B.st[x] !== 'bust') && !isBJ(B.dealer)) while (val(B.dealer).s < 17) B.dealer.push(B.deck.pop());
+    const dv = val(B.dealer).s, dbj = isBJ(B.dealer), dbust = dv > 21, rows = [];
+    B.alive.forEach(x => { const h = B.hands[x], v = val(h).s, bet = B.bets[x], pb = B.st[x] === 'bj'; let k;
+      if (B.st[x] === 'bust') k = -bet; else if (pb && dbj) k = 0; else if (pb) k = Math.floor(bet * 1.5); else if (dbj) k = -bet; else if (dbust || v > dv) k = bet; else if (v < dv) k = -bet; else k = 0;
+      B.pts[x] += k; B.res[x] = k; rows.push({ uid: x, h: h.slice(), v, k, st: B.st[x], bet }); });
+    const outs = B.alive.filter(x => B.pts[x] <= 0); outs.forEach(x => { B.alive.splice(B.alive.indexOf(x), 1); B.out.push(x); });
+    (B.hist = B.hist || []).push({ round: B.round, dealer: B.dealer.slice(), dv, dbj, rows }); if (B.hist.length > 30) B.hist.shift();
+    log(r, '第 ' + B.round + ' 局结算 · 庄家 ' + cs(B.dealer) + ' = ' + (dbj ? '21 点' : dv + (dbust ? ' 爆牌' : '')) + '\n' + rows.map(e => '【' + nm(e.uid) + '】' + (e.st === 'bust' ? e.v + ' 爆牌' : e.st === 'bj' ? '21 点' : e.v) + ' · ' + sg(e.k) + ' → ' + B.pts[e.uid]).join('\n') + (outs.length ? '\n' + outs.map(x => '【' + nm(x) + '】积分归零 · 出局').join('\n') : ''), 'funres', '', { bjr: { round: B.round, dealer: B.dealer.map(c => ({ r: c.r, s: c.s })), dv: dbj ? '21 点' : dv + (dbust ? ' 爆牌' : ''), dbust, rows: rows.map(e => ({ name: nm(e.uid), cards: e.h.map(c => ({ r: c.r, s: c.s })), v: e.st === 'bust' ? e.v + ' 爆牌' : e.st === 'bj' ? '21 点' : String(e.v), bust: e.st === 'bust', k: sg(e.k), kn: e.k, pts: B.pts[e.uid] })), outs: outs.map(x => nm(x)) } });
+    B.idle = B.idle || {}; const hum = B.alive.filter(x => !bot(r, x)); hum.forEach(x => { B.idle[x] = (B.act || {})[x] ? 0 : (B.idle[x] || 0) + 1; });
+    B.phase = 'done'; B.t1 = now + T_GAP; if (!B.alive.length) return finish(r); if (!hum.length || hum.every(x => B.idle[x] >= 3)) { log(r, '连续 3 局无人操作 · 牌局自动结束', 'sys'); finish(r); } };
+  const deal = (r, now) => { const B = r.game.bj; B.deck = shoe();
+    B.alive.forEach(x => { if (!B.bets[x]) B.bets[x] = Math.min(BETS[0], B.pts[x]); B.hands[x] = [B.deck.pop(), B.deck.pop()]; B.st[x] = isBJ(B.hands[x]) ? 'bj' : 'play'; });
+    B.dealer = [B.deck.pop(), B.deck.pop()]; B.phase = 'act'; B.t1 = now + T_ACT; B.dec = {}; B.sub = 1;
+    log(r, '发牌 · 庄家明牌 ' + cs([B.dealer[0]]) + ' · 第 1 轮 · 请在 ' + T_ACT / 1000 + ' 秒内选择要牌或停牌', 'sys', '', { bjd: { round: B.round, up: { r: B.dealer[0].r, s: B.dealer[0].s } } });
+    if (!B.alive.some(x => B.st[x] === 'play')) settle(r, now); };
+  const tick = (r, now) => { const B = r.game && r.game.bj; if (!B || B.end) return false; now = now || Date.now(); let ch = false;
+    if (B.phase === 'bet') { B.alive.forEach(x => { if (bot(r, x) && !B.bets[x]) { B.bets[x] = Math.min(BETS[0], B.pts[x]); ch = true; } }); if (now >= B.t1 || B.alive.every(x => B.bets[x])) { deal(r, now); ch = true; } }
+    if (B.phase === 'act') { B.dec = B.dec || {}; B.alive.forEach(x => { if (bot(r, x) && B.st[x] === 'play' && !B.dec[x]) { B.dec[x] = val(B.hands[x]).s < 17 ? 'hit' : 'stand'; ch = true; } });
+      const pl = B.alive.filter(x => B.st[x] === 'play');
+      if (pl.length && (now >= B.t1 || pl.every(x => B.dec[x]))) { const ln = [];
+        pl.forEach(x => { const d = B.dec[x] || 'late'; if (d === 'hit' || d === 'dbl') { if (d === 'dbl') { B.bets[x] *= 2; B.dbl[x] = 1; } hitc(B, x); const c = B.hands[x][B.hands[x].length - 1], v = val(B.hands[x]).s; if (d === 'dbl' && B.st[x] === 'play') B.st[x] = 'stand'; ln.push('【' + nm(x) + '】' + (d === 'dbl' ? '加倍' : '要牌') + ' ' + cs([c]) + ' → ' + (B.st[x] === 'bust' ? v + ' 爆牌' : v)); } else { B.st[x] = 'stand'; ln.push('【' + nm(x) + '】' + (d === 'late' ? '超时 · 自动停牌' : '停牌') + ' · ' + val(B.hands[x]).s); } });
+        log(r, '第 ' + B.sub + ' 轮结果\n' + ln.join('\n'), 'sys'); B.dec = {}; B.sub++; ch = true;
+        if (B.alive.some(x => B.st[x] === 'play')) { B.t1 = now + T_ACT; log(r, '第 ' + B.sub + ' 轮 · 请在 ' + T_ACT / 1000 + ' 秒内选择要牌或停牌', 'turn'); } }
+      if (!B.alive.some(x => B.st[x] === 'play')) { settle(r, now); ch = true; } }
+    else if (B.phase === 'done' && now >= B.t1) { betPhase(r, now); ch = true; }
+    return ch; };
+  const chk = (r, x, ph) => { const B = r.game && r.game.bj; if (!B) return '游戏未开始'; if (B.end) return '游戏已结束'; if (!B.alive.includes(x)) return '你已出局'; if (B.phase !== ph) return ph === 'bet' ? '现在不是下注时间' : '现在不能要牌'; return ''; };
+  const bet = (r, x, n) => { const e = chk(r, x, 'bet'); if (e) return e; const B = r.game.bj; n = Math.floor(+n); if (!(n >= 1)) return '下注无效'; if (n > B.pts[x]) return '积分不足'; B.bets[x] = n; (B.act = B.act || {})[x] = 1; tick(r); return ''; };
+  const hit = (r, x) => { const e = chk(r, x, 'act'); if (e) return e; const B = r.game.bj; if (B.st[x] !== 'play') return '你已停牌'; B.dec[x] = 'hit'; (B.act = B.act || {})[x] = 1; tick(r); return ''; };
+  const stand = (r, x) => { const e = chk(r, x, 'act'); if (e) return e; const B = r.game.bj; if (B.st[x] !== 'play') return '你已停牌'; B.dec[x] = 'stand'; (B.act = B.act || {})[x] = 1; tick(r); return ''; };
+  const dbl = (r, x) => { const e = chk(r, x, 'act'); if (e) return e; const B = r.game.bj; if (B.st[x] !== 'play') return '你已停牌'; if (B.hands[x].length !== 2) return '只有前两张牌时可以加倍'; if (B.pts[x] < B.bets[x] * 2) return '积分不足以加倍'; B.dec[x] = 'dbl'; (B.act = B.act || {})[x] = 1; tick(r); return ''; };
+  const start = (r, now) => { const ids = Object.keys(r.members); now = now || Date.now();
+    r.started = true; r.game = { order: ids, turn: 0, round: 1, state: 'act', pending: null, log: [], seq: 0, hp: {}, mad: {}, pendMad: {}, hurt: {}, hit: {}, free: true, bj: { all: ids.slice(), alive: ids.slice(), out: [], pts: Object.fromEntries(ids.map(x => [x, 100])), round: 0, phase: 'bet', t1: 0, bets: {}, hands: {}, st: {}, dealer: [], res: {}, dbl: {}, deck: [], hist: [], end: false } };
+    log(r, '二十一点\n每人初始有 100 积分 · 每局先下注，发牌后按轮进行：每轮所有人同时选择要牌或停牌，' + T_ACT / 1000 + ' 秒内未选则会自动停牌，全员选完后一起发牌，进入下一轮\n请保证点数尽量接近 21，超过即爆牌判负\nA 算 1 或 11，J Q K 算 10\n庄家补牌到 17 点以上 · 玩家胜利可以拿回 1 倍下注，玩家若起手 21 点则可以拿回 1.5 倍下注\n加倍：只能在第 1 轮选择，下注翻倍，并且只会再发一张牌，之后自动停牌，不能继续要牌\n积分归零即出局', 'sys'); betPhase(r, now); };
+  const drop = (r, x) => { const B = r.game && r.game.bj; if (!B || B.end) return; const i = B.alive.indexOf(x); if (i < 0) return; B.alive.splice(i, 1); B.out.push(x); log(r, '【' + nm(x) + '】离开了牌桌', 'sys'); if (!B.alive.length) finish(r); else tick(r); };
+  const out = (r, me, now) => { const B = r.game && r.game.bj; if (!B) return null; now = now || Date.now(); const hide = B.phase === 'act' || B.phase === 'bet', fin = B.phase === 'done' || B.phase === 'end', C = h => h.map(c => ({ r: c.r, s: c.s }));
+    const pl = u => { const h = B.hands[u] || [], v = h.length ? val(h) : null; return { uid: u, name: nm(u), pts: B.pts[u], out: !B.alive.includes(u), bet: B.bets[u] || 0, hand: C(h), total: v ? v.s : 0, soft: !!(v && v.soft && v.s < 21), st: B.st[u] || '', dbl: !!B.dbl[u], dec: u === me ? (B.dec || {})[u] || '' : '', decided: !!(B.dec || {})[u], res: fin && u in B.res ? B.res[u] : null }; };
+    const dh = hide ? B.dealer.slice(0, 1) : B.dealer;
+    return { round: B.round, sub: B.sub || 0, phase: B.phase, left: Math.max(0, B.t1 - now), end: B.end, bets: BETS, dealer: { hand: C(dh), hidden: hide && B.dealer.length > 1, total: dh.length ? val(dh).s : 0, bj: !hide && isBJ(B.dealer) }, me: B.all.includes(me) ? pl(me) : null, players: B.all.map(pl),
+      hist: (B.hist || []).slice(-10).reverse().map(h => ({ round: h.round, dealer: cs(h.dealer), dv: h.dbj ? '21 点' : h.dv > 21 ? h.dv + ' 爆牌' : String(h.dv), dh: C(h.dealer), dbust: h.dv > 21, rows: h.rows.map(e => ({ name: nm(e.uid), cards: cs(e.h), hand: C(e.h), bust: e.st === 'bust', bet: e.bet, v: e.st === 'bust' ? e.v + ' 爆牌' : e.st === 'bj' ? '21 点' : String(e.v), k: sg(e.k), kc: e.k > 0 ? 'win' : e.k < 0 ? 'lose' : 'push' })) })) }; };
+  return { start, tick, bet, hit, stand, dbl, drop, out };
+};
+const BJ = BLACKJACK((r, t, k, lv, ex) => gameLog(r, t, k, lv, ex), funName, n => crypto.randomInt(0, n));
 function funTick(r) {}
 function funNext(r) {
   const g = r.game, V = g.vote; V.i++; if (V.i >= V.q.length) return funEnd(r);
@@ -790,7 +846,7 @@ function gameOut(r) { const g = r.game; if (!g) return null; return { mapSeq: (g
 function fieldOut(id, full) {
   const r = fieldRoom(id);
   const now = Date.now();
-  return { id: +id, max: r.main || r.fun ? 0 : 8, main: !!r.main, fun: !!r.fun, cd: r.fun && r.cd ? Math.max(0, r.cd - now) : 0, vote: r.fun && !r.liar ? funOut(r, CUR_VIEWER) : null, liarMode: !!r.liar, lz: r.liar ? LZ.out(r, CUR_VIEWER) : null, started: r.started, dispatcher: r.gm && ((r.started && !r.main) || now - r.gm.t < 30000) ? dispLabel(r.gm.id) || r.gm.id : '', members: Object.keys(r.members).filter(x => !(r.main && r.members[x].away)).map(x => {
+  return { id: +id, max: r.main || r.fun ? 0 : 8, main: !!r.main, fun: !!r.fun, cd: r.fun && r.cd ? Math.max(0, r.cd - now) : 0, vote: r.fun && !r.liar ? funOut(r, CUR_VIEWER) : null, liarMode: !!r.liar, lz: r.liar ? LZ.out(r, CUR_VIEWER) : null, bjMode: !!r.bj, bj: r.bj ? BJ.out(r, CUR_VIEWER, now) : null, started: r.started, dispatcher: r.gm && ((r.started && !r.main) || now - r.gm.t < 30000) ? dispLabel(r.gm.id) || r.gm.id : '', members: Object.keys(r.members).filter(x => !(r.main && r.members[x].away)).map(x => {
     const m = r.members[x], b = m.bot, u = b ? null : getUser(x);
     const mi = mGet(r, x) || {}, gg = r.game || {};
     const o = { id: x, hp: hpNow(mi), hpMax: hpMaxOf(mi.stats), mad: (gg.mad || {})[x] || null, hit: (gg.hit || {})[x] || 0, loot: (gg.loot || {})[x] || [], name: b ? b.name : realName(x, u && u.name), avatar: u ? u.avatar || '' : '', ready: !!m.ready, itemsDone: !!m.itemsDone, items: m.items || [], temps: m.temps || [], lootCarry: m.lootCarry || [], bot: !!b, dispName: dispLabel(x), sane: b ? b.sane !== false : !!u && u.sane !== 0, stats: b ? b.stats : u ? statsOf(u) : null, skills: b ? b.skills : u ? skillsOf(u) : null, dept: b ? b.dept : u ? u.dept || '' : '', idCard: u ? u.idcard || '' : '', secret: r.fun && !r.started && x === CUR_VIEWER ? (r.secrets || {})[x] || '' : '' };
@@ -863,7 +919,7 @@ api.post('/field/rooms/:id/join', auth, (req, res) => {
   if (!r.main && shipGet().lost.includes('sc' + id)) return bad(res, '该先锋舰已失联，无法进入', 409);
   if (!hasStats(statsOf(req.user))) return bad(res, '请先登记属性', 403);
   if (!skillsOf(req.user)) return bad(res, '请先登记技能', 403);
-  if (r.fun) { if (!r.members[me]) { if (r.started) return bad(res, '本局游戏已开始，请等待下一局', 409); r.members[me] = { ready: false, seen: Date.now(), items: [], itemsDone: false }; } r.members[me].seen = Date.now(); return res.json({ room: fieldOut(id) }); }
+  if (r.fun) { if (!r.members[me]) { if (r.started) return bad(res, '本局游戏已开始，请等待下一局', 409); r.members[me] = { ready: false, seen: Date.now(), items: [], itemsDone: !!r.bj }; } r.members[me].seen = Date.now(); return res.json({ room: fieldOut(id) }); }
   if (Object.keys(FIELD).some(x => x !== id && !FIELD[x].main && !FIELD[x].fun && FIELD[x].started && FIELD[x].members[me])) return bad(res, '你正在外勤任务中', 409);
   if (r.main) { if (!r.members[me]) r.members[me] = { ready: false, seen: Date.now(), items: [], itemsDone: false }; r.members[me].seen = Date.now(); r.members[me].away = false; mainJoin(r, me); return res.json({ room: fieldOut(id) }); }
   if (!r.members[me]) {
@@ -875,7 +931,7 @@ api.post('/field/rooms/:id/join', auth, (req, res) => {
   r.members[me].seen = Date.now();
   res.json({ room: fieldOut(id) });
 });
-api.post('/field/rooms/:id/leave', auth, (req, res) => { const r = fieldRoom(req.params.id); if (r && r.fun) { if (r.liar && r.started) LZ.drop(r, req.user.id); delete r.members[req.user.id]; if (!r.started) delete r.secrets[req.user.id]; return res.json({ ok: true }); } if (r && r.main) { { const m0 = r.members[req.user.id], g0 = r.game; if (m0 && g0 && (m0.lootCarry || []).length) { g0.loot = g0.loot || {}; g0.loot[req.user.id] = [...(g0.loot[req.user.id] || []), ...m0.lootCarry]; mainSave(r); } } delete r.members[req.user.id]; mainDrop(r, req.user.id); return res.json({ ok: true }); } if (r && !r.started) { delete r.members[req.user.id]; fieldRoom(req.params.id); } res.json({ ok: true }); });
+api.post('/field/rooms/:id/leave', auth, (req, res) => { const r = fieldRoom(req.params.id); if (r && r.fun) { if (r.liar && r.started) LZ.drop(r, req.user.id); if (r.bj && r.started) BJ.drop(r, req.user.id); delete r.members[req.user.id]; if (!r.started) delete r.secrets[req.user.id]; return res.json({ ok: true }); } if (r && r.main) { { const m0 = r.members[req.user.id], g0 = r.game; if (m0 && g0 && (m0.lootCarry || []).length) { g0.loot = g0.loot || {}; g0.loot[req.user.id] = [...(g0.loot[req.user.id] || []), ...m0.lootCarry]; mainSave(r); } } delete r.members[req.user.id]; mainDrop(r, req.user.id); return res.json({ ok: true }); } if (r && !r.started) { delete r.members[req.user.id]; fieldRoom(req.params.id); } res.json({ ok: true }); });
 api.post('/field/rooms/:id/items', auth, (req, res) => {
   const r = fieldRoom(req.params.id), m = r && r.members[req.user.id]; if (!m) return bad(res, '你不在该舰上', 403);
   if (r.fun && r.liar) { if (r.started) return bad(res, '游戏已开始', 409); const cb = (req.body || {}).clothes || {}, cl = { top: str(cb.top, 24), bot: str(cb.bot, 24), acc: str(cb.acc, 24) }; if (!cl.top || !cl.bot || !cl.acc) return bad(res, '请填写上装、下装和配饰'); r.secrets[req.user.id] = cl; m.itemsDone = true; m.ready = false; m.seen = Date.now(); return res.json({ room: fieldOut(req.params.id) }); }
@@ -986,6 +1042,10 @@ api.post('/field/rooms/:id/fundice', auth, once, (req, res) => {
   const n = Math.floor(+b.n), m = Math.floor(+b.m); if (!(n >= 1 && n <= 10) || !(m >= 2 && m <= 1000)) return bad(res, '骰数 1–10，面数 2–1000');
   const rs = Array.from({ length: n }, () => crypto.randomInt(1, m + 1)), sum = rs.reduce((a, c) => a + c, 0);
   gameLog(r, '【' + memberInfo(r, req.user.id).name + '】骰点 ' + n + 'D' + m + '\n' + (n > 1 ? rs.join('+') + ' = ' : '') + sum, 'roll', 'dice'); res.json({ room: fieldOut(req.params.id) });
+});
+for (const act of ['bjbet', 'bjhit', 'bjstand', 'bjdouble']) api.post('/field/rooms/:id/' + act, auth, once, (req, res) => {
+  const r = fieldRoom(req.params.id), b = req.body || {}; if (!r || !r.bj || !r.game || !r.game.bj) return bad(res, '游戏未开始', 409); if (!r.members[req.user.id]) return bad(res, '你不在本局中', 403);
+  const me = req.user.id, e = act === 'bjbet' ? BJ.bet(r, me, b.n) : act === 'bjhit' ? BJ.hit(r, me) : act === 'bjstand' ? BJ.stand(r, me) : BJ.dbl(r, me); if (e) return bad(res, e, 409); res.json({ room: fieldOut(req.params.id) });
 });
 for (const act of ['liarbid', 'liaropen']) api.post('/field/rooms/:id/' + act, auth, once, (req, res) => {
   const r = fieldRoom(req.params.id), b = req.body || {}; if (!r || !r.liar || !r.game || !r.game.liar) return bad(res, '游戏未开始', 409); if (!r.members[req.user.id]) return bad(res, '你不在本局中', 403);
@@ -1163,11 +1223,11 @@ api.post('/field/rooms/:id/again', auth, admin, once, (req, res) => {
 api.post('/field/rooms/:id/end', auth, admin, (req, res) => {
   const r0 = FIELD[req.params.id]; if (!r0) return bad(res, '无效舰船', 404);
   [...new Set([...Object.keys(r0.members), ...Object.keys((r0.game || {}).loot || {})])].forEach(x => { const m = r0.members[x] || {}, L = [...(((r0.game || {}).loot || {})[x] || []), ...(m.lootCarry || [])]; if (m.bot || /^bot/.test(x) || !L.length) return; const uu = getUser(x); if (uu) db.prepare('update users set gained = ? where id = ?').run(JSON.stringify([...listOf(uu, 'gained'), ...L]), x); });
-  if (r0.main) mainClear(); FIELD[req.params.id] = r0.main ? mkMain() : r0.liar ? mkLiar() : r0.fun ? mkFun() : { members: {}, started: false }; fieldBots(req.params.id); res.json({ room: fieldOut(req.params.id, true) });
+  if (r0.main) mainClear(); FIELD[req.params.id] = r0.main ? mkMain() : r0.liar ? mkLiar() : r0.bj ? mkBJ() : r0.fun ? mkFun() : { members: {}, started: false }; fieldBots(req.params.id); res.json({ room: fieldOut(req.params.id, true) });
 });
 api.post('/field/rooms/:id/reset', auth, admin, (req, res) => {
   if (!FIELD[req.params.id]) return bad(res, '无效舰船', 404);
-  if (FIELD[req.params.id].main) mainClear(); FIELD[req.params.id] = FIELD[req.params.id].main ? mkMain() : FIELD[req.params.id].liar ? mkLiar() : FIELD[req.params.id].fun ? mkFun() : { members: {}, started: false }; fieldBots(req.params.id); res.json({ room: fieldOut(req.params.id, true) });
+  if (FIELD[req.params.id].main) mainClear(); FIELD[req.params.id] = FIELD[req.params.id].main ? mkMain() : FIELD[req.params.id].liar ? mkLiar() : FIELD[req.params.id].bj ? mkBJ() : FIELD[req.params.id].fun ? mkFun() : { members: {}, started: false }; fieldBots(req.params.id); res.json({ room: fieldOut(req.params.id, true) });
 });
 
 // ---- 一览 · 飞船状态 ----
