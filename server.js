@@ -759,13 +759,14 @@ const BLACKJACK = (log, nm, rnd) => {
   const val = h => { let s = 0, a = 0; h.forEach(c => { if (c.r === 'A') { a++; s++; } else s += c.r === 'J' || c.r === 'Q' || c.r === 'K' ? 10 : +c.r; }); const soft = a > 0 && s + 10 <= 21; return { s: soft ? s + 10 : s, soft }; };
   const isBJ = h => h.length === 2 && val(h).s === 21, cs = h => h.map(c => c.r + c.s).join(' '), sg = k => k > 0 ? '+' + k : k < 0 ? String(k) : '±0';
   const shoe = () => { const d = []; for (let k = 0; k < 2; k++) SU.forEach(s => RK.forEach(r => d.push({ r, s }))); for (let i = d.length - 1; i > 0; i--) { const j = rnd(i + 1); [d[i], d[j]] = [d[j], d[i]]; } return d; };
+  const draw = B => { if (!B.deck || !B.deck.length) B.deck = shoe(); return B.deck.pop(); };
   const bot = (r, x) => !!(r.members[x] && r.members[x].bot);
-  const hitc = (B, x) => { B.hands[x].push(B.deck.pop()); const v = val(B.hands[x]).s; if (v > 21) B.st[x] = 'bust'; else if (v === 21) B.st[x] = 'stand'; };
+  const hitc = (B, x) => { B.hands[x].push(draw(B)); const v = val(B.hands[x]).s; if (v > 21) B.st[x] = 'bust'; else if (v === 21) B.st[x] = 'stand'; };
   const betPhase = (r, now) => { const B = r.game.bj; B.round++; B.phase = 'bet'; B.t1 = now + T_BET; B.bets = {}; B.hands = {}; B.st = {}; B.dealer = []; B.res = {}; B.dbl = {}; B.dec = {}; B.sub = 0; B.act = {}; log(r, '第 ' + B.round + ' 局 · 请在 ' + T_BET / 1000 + ' 秒内下注', 'turn'); };
   const finish = r => { const B = r.game.bj; B.end = true; B.phase = 'end'; const rank = B.all.slice().sort((a, b) => B.pts[b] - B.pts[a]); log(r, '二十一点结束\n' + rank.map((u, k) => (k + 1) + '.【' + nm(u) + '】' + B.pts[u] + ' 积分').join('\n'), 'funres', 'end'); };
-  const settle = (r, now) => { const B = r.game.bj;
+  const settle = (r, now) => { const B = r.game.bj; while (B.dealer.length < 2) B.dealer.push(draw(B)); B.alive.forEach(x => { if (!B.hands[x] || B.hands[x].length < 2) { B.hands[x] = B.hands[x] || []; while (B.hands[x].length < 2) B.hands[x].push(draw(B)); B.st[x] = B.st[x] || 'stand'; B.bets[x] = B.bets[x] || Math.min(10, B.pts[x]); } });
     B.alive.forEach(x => { if (B.st[x] === 'play') B.st[x] = 'stand'; });
-    if (B.alive.some(x => B.st[x] !== 'bust') && !isBJ(B.dealer)) while (val(B.dealer).s < 17) B.dealer.push(B.deck.pop());
+    if (B.alive.some(x => B.st[x] !== 'bust') && !isBJ(B.dealer)) while (val(B.dealer).s < 17) B.dealer.push(draw(B));
     const dv = val(B.dealer).s, dbj = isBJ(B.dealer), dbust = dv > 21, rows = [];
     B.alive.forEach(x => { const h = B.hands[x], v = val(h).s, bet = B.bets[x], pb = B.st[x] === 'bj'; let k;
       if (B.st[x] === 'bust') k = -bet; else if (pb && dbj) k = 0; else if (pb) k = Math.floor(bet * 1.5); else if (dbj) k = -bet; else if (dbust || v > dv) k = bet; else if (v < dv) k = -bet; else k = 0;
@@ -776,8 +777,8 @@ const BLACKJACK = (log, nm, rnd) => {
     B.idle = B.idle || {}; const hum = B.alive.filter(x => !bot(r, x)); hum.forEach(x => { B.idle[x] = (B.act || {})[x] ? 0 : (B.idle[x] || 0) + 1; });
     B.phase = 'done'; B.t1 = now + T_GAP; if (!B.alive.length) return finish(r); if (!hum.length || hum.every(x => B.idle[x] >= 3)) { log(r, '连续 3 局无人操作 · 牌局自动结束', 'sys'); finish(r); } };
   const deal = (r, now) => { const B = r.game.bj; B.deck = shoe();
-    B.alive.forEach(x => { if (!B.bets[x]) B.bets[x] = Math.min(BETS[0], B.pts[x]); B.hands[x] = [B.deck.pop(), B.deck.pop()]; B.st[x] = isBJ(B.hands[x]) ? 'bj' : 'play'; });
-    B.dealer = [B.deck.pop(), B.deck.pop()]; B.phase = 'act'; B.t1 = now + T_ACT; B.dec = {}; B.sub = 1;
+    B.alive.forEach(x => { if (!B.bets[x]) B.bets[x] = Math.min(BETS[0], B.pts[x]); B.hands[x] = [draw(B), draw(B)]; B.st[x] = isBJ(B.hands[x]) ? 'bj' : 'play'; });
+    B.dealer = [draw(B), draw(B)]; B.phase = 'act'; B.t1 = now + T_ACT; B.dec = {}; B.sub = 1;
     log(r, '发牌 · 庄家明牌 ' + cs([B.dealer[0]]) + ' · 第 1 轮 · 请在 ' + T_ACT / 1000 + ' 秒内选择要牌或停牌', 'sys', '', { bjd: { round: B.round, up: { r: B.dealer[0].r, s: B.dealer[0].s } } });
     if (!B.alive.some(x => B.st[x] === 'play')) settle(r, now); };
   const tick = (r, now) => { const B = r.game && r.game.bj; if (!B || B.end) return false; now = now || Date.now(); let ch = false;
