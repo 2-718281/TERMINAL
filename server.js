@@ -632,6 +632,17 @@ const FIELD = { 1: { members: {}, started: false }, 2: { members: {}, started: f
 // 主舰：常驻房间，不限人数，自由 RP（技能仍需调度批准）
 const mkMain = () => ({ members: {}, started: true, main: true, game: { order: [], turn: 0, round: 1, state: 'act', pending: null, log: [], seq: 0, hp: {}, mad: {}, pendMad: {}, hurt: {}, hit: {} } });
 FIELD[3] = mkMain();
+// WEEK4 主舰：独立舰船房间（非 main）——无回合、无审批，全员自由行动
+const W4_ID = '12', mkW4 = () => ({ members: {}, started: false, w4: true });
+FIELD[W4_ID] = mkW4();
+const w4Open = () => !!shipGet().w4;
+function w4Join(r, x) { const g = r.game, m = r.members[x]; if (!g || !m || !m.itemsDone || m.away || isDead(r, x) || g.order.includes(x)) return; g.order.push(x); }
+function w4Start(r) {
+  const ids = Object.keys(r.members), hp = {}; ids.forEach(x => { const st = memberInfo(r, x).stats || {}; hp[x] = Math.floor(((+st.siz || 0) + (+st.con || 0)) / 10); });
+  r.game = { order: ids.filter(x => !r.members[x].away), turn: 0, round: 1, free: true, state: 'act', pending: null, log: [], seq: 0, hp, mad: {}, pendMad: {}, hurt: {}, hit: {} };
+  gameLog(r, 'WEEK4 行动开始 · 全员 ' + ids.length + ' 人 · 自由行动，骰点即时结算', 'sys');
+}
+function w4Drop(r, x) { const g = r.game; if (!g) return; const i = g.order.indexOf(x); if (i >= 0) g.order.splice(i, 1); }
 // 娱乐室 · 秘密投票：不计入外勤 / 舰船位置；全员自由检定，无需调度
 const FUN_ID = '9', FUN_MIN = 3, FUN_MAX = 12, FUN_SEC = 300000, FUN_GAP = 6000;
 const mkFun = () => ({ members: {}, started: false, fun: true, secrets: {} });
@@ -641,10 +652,12 @@ FIELD[LIAR_ID] = mkLiar();
 const BJ_ID = '11', mkBJ = () => ({ members: {}, started: false, fun: true, bj: true, secrets: {} });
 FIELD[BJ_ID] = mkBJ();
 // 主舰记录持久化：服务器重启后仍保留完整聊天记录与轮次
-let mainSaveT = null;
-function mainSave(r) { clearTimeout(mainSaveT); mainSaveT = setTimeout(() => { try { const g = r.game; db.prepare("insert or replace into kv(k, v) values('main_log', ?)").run(JSON.stringify({ all: g.all || [], seq: g.seq || 0, round: g.round || 1, fx: g.fx || {} })); } catch (e) {} }, 2000); }
-function mainLoad() { try { const x = db.prepare("select v from kv where k = 'main_log'").get(); if (!x) return; const d = JSON.parse(x.v), g = FIELD[3].game; g.all = Array.isArray(d.all) ? d.all : []; g.log = g.all.slice(-300); g.seq = +d.seq || (g.all.length ? g.all[g.all.length - 1].id : 0); g.round = +d.round || 1; g.fx = d.fx || {}; } catch (e) {} }
-function mainClear() { clearTimeout(mainSaveT); try { db.prepare("delete from kv where k = 'main_log'").run(); } catch (e) {} }
+const mainSaveT = {}, mainKey = r => r.w4 ? 'w4_room' : 'main_log';
+function mainSave(r) { if (r.w4) return w4Save(r); const K = mainKey(r); clearTimeout(mainSaveT[K]); mainSaveT[K] = setTimeout(() => { try { const g = r.game; db.prepare("insert or replace into kv(k, v) values(?, ?)").run(K, JSON.stringify({ all: g.all || [], seq: g.seq || 0, round: g.round || 1, fx: g.fx || {}, w4: g.w4 || null })); } catch (e) {} }, 2000); }
+function w4Save(r) { clearTimeout(mainSaveT.w4); mainSaveT.w4 = setTimeout(() => { try { const g = r.game; db.prepare("insert or replace into kv(k, v) values('w4_room', ?)").run(JSON.stringify({ v: 2, started: !!r.started, members: r.started ? r.members : {}, game: g ? { ...g, log: undefined, lastSay: undefined } : null })); } catch (e) {} }, 2000); }
+function w4Load() { try { const x = db.prepare("select v from kv where k = 'w4_room'").get(); if (!x) return; const d = JSON.parse(x.v); if (d.v !== 2 || !d.started || !d.game) return; const r = FIELD[W4_ID]; r.started = true; r.members = d.members || {}; Object.values(r.members).forEach(m => { m.away = true; m.seen = Date.now(); }); r.game = d.game; r.game.all = r.game.all || []; r.game.log = r.game.all.slice(-300); r.game.order = []; r.game.free = true; r.game.state = 'act'; r.game.pending = null; } catch (e) {} }
+function mainLoad() { w4Load(); ['3'].forEach(id => { try { const x = db.prepare("select v from kv where k = ?").get(mainKey(FIELD[id])); if (!x) return; const d = JSON.parse(x.v), g = FIELD[id].game; g.all = Array.isArray(d.all) ? d.all : []; g.log = g.all.slice(-300); g.seq = +d.seq || (g.all.length ? g.all[g.all.length - 1].id : 0); g.round = +d.round || 1; g.fx = d.fx || {}; if (FIELD[id].w4) { g.free = true; g.state = 'act'; g.pending = null; if (d.w4) g.w4 = d.w4; } } catch (e) {} }); }
+function mainClear(r) { if (r.w4) { clearTimeout(mainSaveT.w4); try { db.prepare("delete from kv where k = 'w4_room'").run(); } catch (e) {} return; } const K = mainKey(r); clearTimeout(mainSaveT[K]); try { db.prepare("delete from kv where k = ?").run(K); } catch (e) {} }
 const FIELD_BOTS = [];
 const GM_AS = { narr: '调度', res: '萨沙·瓦格纳', pilot: 'Kharon', log: '弘泽', nyx: '奈娅', q: '???', voice: '声音', bc: '广播' };
 function fieldBots(id) {
@@ -655,6 +668,7 @@ Object.keys(FIELD).forEach(fieldBots);
 function fieldRoom(id) {
   const r = FIELD[id]; if (!r) return null; const now = Date.now();
   if (r.fun) return funRoom(id, r, now);
+  if (r.w4 && r.started) { Object.keys(r.members).forEach(x => { const m = r.members[x], idle = now - m.seen; if (idle > 6 * 3600e3) { delete r.members[x]; w4Drop(r, x); } else if (idle > 60000 && !m.away) { m.away = true; w4Drop(r, x); } }); r.game.order.filter(x => !r.members[x] || isDead(r, x)).forEach(x => w4Drop(r, x)); Object.keys(r.members).forEach(x => w4Join(r, x)); return r; }
   if (r.main) { Object.keys(r.members).forEach(x => { const m = r.members[x], idle = now - m.seen; if (idle > 6 * 3600e3) { delete r.members[x]; mainDrop(r, x); } else if (idle > 60000 && !m.away) { m.away = true; mainDrop(r, x); } }); r.game.order.filter(x => !r.members[x]).forEach(x => mainDrop(r, x)); return r; }
   Object.keys(r.members).forEach(x => { if (!r.started && !r.members[x].bot && now - r.members[x].seen > 20000) delete r.members[x]; });
   if (!Object.keys(r.members).length) r.started = false;
@@ -705,7 +719,7 @@ function mGet(r, x) { const m = r.members[x]; if (!m) return null; if (m.bot) re
 const hpNow = i => { const mx = hpMaxOf(i && i.stats); return !i || i.hp == null ? mx : Math.min(+i.hp, mx); };
 function mSet(r, x, k, v) { const m = r.members[x]; if (!m) return; if (m.bot) { m.bot[k] = v; return; } const col = { hp: 'hp', er: 'er', sane: 'sane', stats: 'stats' }[k]; if (col) db.prepare('update users set ' + col + ' = ? where id = ?').run(k === 'stats' ? JSON.stringify(v) : k === 'sane' ? (v ? 1 : 0) : v, x); }
 function memberInfo(r, x) { const m = r.members[x] || {}, b = m.bot, u = b ? null : getUser(x); return { name: b ? b.name : realName(x, u && u.name), stats: b ? b.stats : u ? statsOf(u) : null, skills: b ? b.skills : u ? skillsOf(u) : null }; }
-function gameLog(r, text, kind, lv, extra) { const g = r.game; g.seq++; const e = { id: g.seq, t: Date.now(), kind, text, lv: lv || '', ...(extra || {}) }; g.log.push(e); if (g.log.length > 300) g.log.shift(); g.all = g.all || []; g.all.push(e); if (g.all.length > (r.main ? 20000 : 5000)) g.all.shift(); if (r.main) mainSave(r); }
+function gameLog(r, text, kind, lv, extra) { const g = r.game; g.seq++; const e = { id: g.seq, t: Date.now(), kind, text, lv: lv || '', ...(extra || {}) }; g.log.push(e); if (g.log.length > 300) g.log.shift(); g.all = g.all || []; g.all.push(e); if (g.all.length > (r.main || r.w4 ? 20000 : 5000)) g.all.shift(); if (r.main || r.w4) mainSave(r); }
 db.exec('create table if not exists field_logs(id integer primary key autoincrement, name text, ship text, members text, log text, by_ text, created_at integer)');
 function gameTurnLog(r) { const g = r.game, x = g.order[g.turn]; if (!x) { if (r.main) gameLog(r, '第 ' + g.round + ' 轮 · 暂无可行动船员', 'turn'); return; } gameLog(r, '第 ' + g.round + ' 轮 · 【' + (x ? memberInfo(r, x).name : '—') + '】的回合', 'turn'); }
 function gameStart(r) {
@@ -843,17 +857,17 @@ function funOut(r, me) {
     rounds: (V.end ? V.rounds : []).map(x => { const open = x.shown || V.end; return { no: x.no, text: x.text, N: x.N, k: x.k, out: x.out, answerName: open ? funName(x.author) : '', rows: Object.keys(x.rec).map(u => { const e = x.rec[u]; return { uid: u, name: funName(u), role: !open && e.role === 'author' ? 'guess' : e.role, vote: e.vote, vname: e.vote ? funName(e.vote) : '', ok: e.ok, res: e.res }; }) }; }),
     cur: c ? { no: c.no, text: c.text, t1: c.t1, mine: c.votes[me] || '', isMine: c.author === me, votes: Object.keys(c.votes).map(x => ({ uid: x, name: funName(x), target: c.votes[x], tname: funName(c.votes[x]) })) } : null };
 }
-function gameOut(r) { const g = r.game; if (!g) return null; return { mapSeq: (g.map && g.map.seq) || 0, dogUsed: !!g.dogUsed, free: !!g.free, round: g.round, turnId: g.free ? '' : (g.order[g.turn] || ''), order: g.order.map(x => { const i = memberInfo(r, x); return { id: x, name: i.name, dex: +((i.stats || {}).dex) || 0 }; }), state: g.state, pending: g.pending, skip: g.skip || {}, dropped: g.dropped || [], fx: g.fx || {}, dead: g.dead || {}, log: (CUR_VIEWER && isAdmin(CUR_VIEWER) && !r.fun ? g.log : g.log.filter(l => !l.hide && (!l.to || (CUR_VIEWER && l.to === CUR_VIEWER)))).slice(-150) }; }
+function gameOut(r) { const g = r.game; if (!g) return null; return { mapSeq: (g.map && g.map.seq) || 0, dogUsed: !!g.dogUsed, free: !!g.free, round: g.round, turnId: g.free ? '' : (g.order[g.turn] || ''), order: g.order.map(x => { const i = memberInfo(r, x); return { id: x, name: i.name, dex: +((i.stats || {}).dex) || 0 }; }), state: g.state, pending: g.pending, skip: g.skip || {}, dropped: g.dropped || [], fx: g.fx || {}, dead: g.dead || {}, w4: r.w4 ? w4Out(r) : null, log: (CUR_VIEWER && isAdmin(CUR_VIEWER) && !r.fun ? g.log : g.log.filter(l => !l.hide && (!l.to || (CUR_VIEWER && l.to === CUR_VIEWER)))).slice(-150) }; }
 function fieldOut(id, full) {
   const r = fieldRoom(id);
   const now = Date.now();
-  return { id: +id, max: r.main || r.fun ? 0 : 8, main: !!r.main, fun: !!r.fun, cd: r.fun && r.cd ? Math.max(0, r.cd - now) : 0, vote: r.fun && !r.liar ? funOut(r, CUR_VIEWER) : null, liarMode: !!r.liar, lz: r.liar ? LZ.out(r, CUR_VIEWER) : null, bjMode: !!r.bj, bj: r.bj ? BJ.out(r, CUR_VIEWER, now) : null, started: r.started, dispatcher: r.gm && ((r.started && !r.main) || now - r.gm.t < 30000) ? dispLabel(r.gm.id) || r.gm.id : '', members: Object.keys(r.members).filter(x => !(r.main && r.members[x].away)).map(x => {
+  return { id: +id, max: r.main || r.w4 || r.fun ? 0 : 8, main: !!r.main, w4: !!r.w4, fun: !!r.fun, cd: r.fun && r.cd ? Math.max(0, r.cd - now) : 0, vote: r.fun && !r.liar ? funOut(r, CUR_VIEWER) : null, liarMode: !!r.liar, lz: r.liar ? LZ.out(r, CUR_VIEWER) : null, bjMode: !!r.bj, bj: r.bj ? BJ.out(r, CUR_VIEWER, now) : null, started: r.started, dispatcher: r.gm && ((r.started && !r.main) || now - r.gm.t < 30000) ? dispLabel(r.gm.id) || r.gm.id : '', members: Object.keys(r.members).filter(x => !(r.main && r.members[x].away)).map(x => {
     const m = r.members[x], b = m.bot, u = b ? null : getUser(x);
     const mi = mGet(r, x) || {}, gg = r.game || {};
     const o = { id: x, hp: hpNow(mi), hpMax: hpMaxOf(mi.stats), mad: (gg.mad || {})[x] || null, hit: (gg.hit || {})[x] || 0, loot: (gg.loot || {})[x] || [], name: b ? b.name : realName(x, u && u.name), avatar: u ? u.avatar || '' : '', ready: !!m.ready, itemsDone: !!m.itemsDone, items: m.items || [], temps: m.temps || [], lootCarry: m.lootCarry || [], bot: !!b, dispName: dispLabel(x), sane: b ? b.sane !== false : !!u && u.sane !== 0, stats: b ? b.stats : u ? statsOf(u) : null, skills: b ? b.skills : u ? skillsOf(u) : null, dept: b ? b.dept : u ? u.dept || '' : '', idCard: u ? u.idcard || '' : '', secret: r.fun && !r.started && x === CUR_VIEWER ? (r.secrets || {})[x] || '' : '' };
     if (full) { o.realName = b ? '测试账号' : (ROSTER[x] && ROSTER[x].name) || ''; o.er = mi.er || 0; o.pendMad = !!(gg.pendMad || {})[x]; }
     return o;
-  }), game: gameOut(r), def: r.fun ? null : r.main ? (() => { const s = shipGet(); let p = 0, q = 0; SHIP_MODS.forEach(m => { const d = defOf(s, m); p += d.p; q += d.s; }); return { p, s: q, max: SHIP_MODS.length * 30, ana: true, med: true, main: true }; })() : defOf(shipGet(), 'sc' + id) };
+  }), game: gameOut(r), def: r.fun ? null : r.main || r.w4 ? (() => { const s = shipGet(); let p = 0, q = 0; SHIP_MODS.forEach(m => { const d = defOf(s, m); p += d.p; q += d.s; }); return { p, s: q, max: SHIP_MODS.length * 30, ana: true, med: true, main: true }; })() : defOf(shipGet(), 'sc' + id) };
 }
 api.post('/field/stats', auth, (req, res) => {
   const u = req.user; if (hasStats(statsOf(u))) return bad(res, '属性已登记，如需修改请联系调度', 409);
@@ -886,10 +900,10 @@ api.get('/field/mine', auth, (req, res) => {
   Object.keys(FIELD).forEach(id => { if (FIELD[id].fun) return; const r = fieldRoom(id); if (r.members[me]) { member = +id; started = r.started; } if (r.started && r.gm && r.gm.id === me && !r.members[me] && Date.now() - r.gm.t < 30000) gmRoom = +id; });
   res.json({ member, started, gmRoom });
 });
-api.get('/field/rooms', auth, (req, res) => res.json({ max: 8, rooms: Object.keys(FIELD).filter(id => !FIELD[id].fun).map(id => { const r = fieldRoom(id); return { id: +id, n: Object.keys(r.members).length, started: r.started, main: !!r.main, lost: shipGet().lost.includes('sc' + id) }; }) }));
+api.get('/field/rooms', auth, (req, res) => res.json({ max: 8, rooms: Object.keys(FIELD).filter(id => !FIELD[id].fun).map(id => { const r = fieldRoom(id); return { id: +id, n: Object.keys(r.members).length, started: r.started, main: !!r.main, w4: !!r.w4, lost: shipGet().lost.includes('sc' + id) }; }) }));
 api.get('/field/rooms/:id', auth, (req, res) => {
   const r = fieldRoom(req.params.id); if (!r) return bad(res, '无效舰船', 404);
-  { const m = r.members[req.user.id]; if (m) { m.seen = Date.now(); if (r.main && m.away && !req.query.gm) { m.away = false; mainJoin(r, req.user.id); } } }
+  { const m = r.members[req.user.id]; if (m) { m.seen = Date.now(); if (r.main && m.away && !req.query.gm) { m.away = false; mainJoin(r, req.user.id); } if (r.w4 && m.away && !req.query.gm) { m.away = false; w4Join(r, req.user.id); } } }
   if (isAdmin(req.user.id) && req.query.gm) { if (r.gm && r.gm.id !== req.user.id && Date.now() - r.gm.t < 30000) return bad(res, '该舰已有调度【' + (dispLabel(r.gm.id) || r.gm.id) + '】在线，一艘舰只能有一位调度', 409); r.gm = { id: req.user.id, t: Date.now() }; }
   res.json({ room: fieldOut(req.params.id, isAdmin(req.user.id)) });
 });
@@ -917,11 +931,13 @@ api.post('/field/rooms/:id/map', auth, (req, res) => {
 api.post('/field/rooms/:id/ungm', auth, admin, (req, res) => { const r = fieldRoom(req.params.id); if (r && r.gm && r.gm.id === req.user.id) delete r.gm; res.json({ ok: true }); });
 api.post('/field/rooms/:id/join', auth, (req, res) => {
   const id = req.params.id, r = fieldRoom(id), me = req.user.id; if (!r) return bad(res, '无效舰船', 404);
-  if (!r.main && shipGet().lost.includes('sc' + id)) return bad(res, '该先锋舰已失联，无法进入', 409);
+  if (!r.main && !r.w4 && shipGet().lost.includes('sc' + id)) return bad(res, '该先锋舰已失联，无法进入', 409);
   if (!hasStats(statsOf(req.user))) return bad(res, '请先登记属性', 403);
   if (!skillsOf(req.user)) return bad(res, '请先登记技能', 403);
   if (r.fun) { if (!r.members[me]) { if (r.started) return bad(res, '本局游戏已开始，请等待下一局', 409); r.members[me] = { ready: false, seen: Date.now(), items: [], itemsDone: !!r.bj }; } r.members[me].seen = Date.now(); return res.json({ room: fieldOut(id) }); }
-  if (Object.keys(FIELD).some(x => x !== id && !FIELD[x].main && !FIELD[x].fun && FIELD[x].started && FIELD[x].members[me])) return bad(res, '你正在外勤任务中', 409);
+  if (Object.keys(FIELD).some(x => x !== id && !FIELD[x].main && !FIELD[x].fun && FIELD[x].started && !FIELD[x].w4 && FIELD[x].members[me])) return bad(res, '你正在外勤任务中', 409);
+  if (r.main || r.w4) { if (r.w4 && !w4Open()) return bad(res, 'WEEK4 主舰尚未开放', 409); if (r.main && w4Open()) return bad(res, '主舰频道已关闭', 409); Object.keys(FIELD).forEach(k => { const o = FIELD[k]; if (k !== id && (o.main || o.w4) && o.members[me]) { if (o.w4) w4Drop(o, me); else mainDrop(o, me); delete o.members[me]; } }); }
+  if (r.w4) { if (!r.members[me]) { if (r.started) return bad(res, 'WEEK4 行动已开始，无法中途加入', 409); r.members[me] = { ready: false, seen: Date.now(), items: [], itemsDone: false }; } r.members[me].seen = Date.now(); r.members[me].away = false; if (r.started) { w4Join(r, me); mainSave(r); } return res.json({ room: fieldOut(id) }); }
   if (r.main) { if (!r.members[me]) r.members[me] = { ready: false, seen: Date.now(), items: [], itemsDone: false }; r.members[me].seen = Date.now(); r.members[me].away = false; mainJoin(r, me); return res.json({ room: fieldOut(id) }); }
   if (!r.members[me]) {
     if (r.started) return bad(res, '该舰已启航', 409);
@@ -932,7 +948,7 @@ api.post('/field/rooms/:id/join', auth, (req, res) => {
   r.members[me].seen = Date.now();
   res.json({ room: fieldOut(id) });
 });
-api.post('/field/rooms/:id/leave', auth, (req, res) => { const r = fieldRoom(req.params.id); if (r && r.fun) { if (r.liar && r.started) LZ.drop(r, req.user.id); if (r.bj && r.started) BJ.drop(r, req.user.id); delete r.members[req.user.id]; if (!r.started) delete r.secrets[req.user.id]; return res.json({ ok: true }); } if (r && r.main) { { const m0 = r.members[req.user.id], g0 = r.game; if (m0 && g0 && (m0.lootCarry || []).length) { g0.loot = g0.loot || {}; g0.loot[req.user.id] = [...(g0.loot[req.user.id] || []), ...m0.lootCarry]; mainSave(r); } } delete r.members[req.user.id]; mainDrop(r, req.user.id); return res.json({ ok: true }); } if (r && !r.started) { delete r.members[req.user.id]; fieldRoom(req.params.id); } res.json({ ok: true }); });
+api.post('/field/rooms/:id/leave', auth, (req, res) => { const r = fieldRoom(req.params.id); if (r && r.fun) { if (r.liar && r.started) LZ.drop(r, req.user.id); if (r.bj && r.started) BJ.drop(r, req.user.id); delete r.members[req.user.id]; if (!r.started) delete r.secrets[req.user.id]; return res.json({ ok: true }); } if (r && r.w4 && r.started) { const m0 = r.members[req.user.id], g0 = r.game; if (m0 && (m0.lootCarry || []).length) { g0.loot = g0.loot || {}; g0.loot[req.user.id] = [...(g0.loot[req.user.id] || []), ...m0.lootCarry]; mainSave(r); } delete r.members[req.user.id]; w4Drop(r, req.user.id); return res.json({ ok: true }); } if (r && r.main) { { const m0 = r.members[req.user.id], g0 = r.game; if (m0 && g0 && (m0.lootCarry || []).length) { g0.loot = g0.loot || {}; g0.loot[req.user.id] = [...(g0.loot[req.user.id] || []), ...m0.lootCarry]; mainSave(r); } } delete r.members[req.user.id]; mainDrop(r, req.user.id); return res.json({ ok: true }); } if (r && !r.started) { delete r.members[req.user.id]; fieldRoom(req.params.id); } res.json({ ok: true }); });
 api.post('/field/rooms/:id/items', auth, (req, res) => {
   const r = fieldRoom(req.params.id), m = r && r.members[req.user.id]; if (!m) return bad(res, '你不在该舰上', 403);
   if (r.fun && r.liar) { if (r.started) return bad(res, '游戏已开始', 409); const cb = (req.body || {}).clothes || {}, cl = { top: str(cb.top, 24), bot: str(cb.bot, 24), acc: str(cb.acc, 24) }; if (!cl.top || !cl.bot || !cl.acc) return bad(res, '请填写上装、下装和配饰'); r.secrets[req.user.id] = cl; m.itemsDone = true; m.ready = false; m.seen = Date.now(); return res.json({ room: fieldOut(req.params.id) }); }
@@ -955,7 +971,7 @@ api.post('/field/rooms/:id/ready', auth, (req, res) => {
 api.post('/field/rooms/:id/confirm', auth, admin, (req, res) => {
   const r = fieldRoom(req.params.id); if (!r) return bad(res, '无效舰船', 404);
   const ms = Object.values(r.members); if (!ms.length || ms.some(x => !x.ready)) return bad(res, '全员准备后才能确认', 409);
-  r.started = true; r.gm = { id: req.user.id, t: Date.now() }; gameStart(r); res.json({ room: fieldOut(req.params.id, true) });
+  r.started = true; r.gm = { id: req.user.id, t: Date.now() }; if (r.w4) { w4Start(r); mainSave(r); } else gameStart(r); res.json({ room: fieldOut(req.params.id, true) });
 });
 api.post('/field/rooms/:id/kick', auth, admin, (req, res) => {
   const r = fieldRoom(req.params.id), b = req.body || {}; if (!r || !r.members[b.uid]) return bad(res, '该成员不在舰上', 404);
@@ -1004,6 +1020,37 @@ api.post('/field/rooms/:id/act', auth, once, (req, res) => {
     gameLog(r, '【' + info.name + '】' + on + '进行【' + label + '】检定\nD100=' + roll + '/' + val + ' ' + lv, 'roll', lv);
     return res.json({ room: fieldOut(req.params.id) });
   }
+  if (r.w4) {
+    const info = memberInfo(r, me), target = str(b.target, 24), on = target ? '对【' + target + '】' : '', item = str(b.item, 30);
+    const wornSuit = item === '宇航服' && !!w4Of(r).suit[me];
+    if (item && !wornSuit && ![...(r.members[me].items || []), ...((g.loot || {})[me] || [])].includes(item)) return bad(res, '物品不在背包中');
+    if (b.kind === 'free') { if (!target && !item) return bad(res, '请填写目标或选择物品');
+      const to = item && target && Object.keys(r.members).find(x => x !== me && memberInfo(r, x).name === target);
+      if (to) { if (isDead(r, to)) return bad(res, '对方已死亡', 409); g.loot = g.loot || {}; const TL = g.loot[to] = g.loot[to] || []; if (TL.length >= lootCap(to, r)) return bad(res, '【' + target + '】的外勤背包已满', 409); let off = false; if (!w4Take(r, me, item)) { if (!wornSuit) return bad(res, '物品不在背包中'); w4Of(r).suit[me] = false; off = true; } TL.push(item); gameLog(r, '【' + info.name + '】' + (off ? '脱下身上的宇航服，' : '') + '把【' + item + '】交给了【' + target + '】', 'item'); mainSave(r); return res.json({ room: fieldOut(req.params.id) }); }
+      gameLog(r, '【' + info.name + '】' + on + (item ? '使用了【' + item + '】' : '进行了人为干涉'), item ? 'item' : 'sys'); return res.json({ room: fieldOut(req.params.id) }); }
+    let label = '', val = 0, key = '';
+    if (b.kind === 'skill') { const L = SKILL_LABELS[b.cat], i = +b.idx; if (!L || !(i >= 0 && i < 3)) return bad(res, '无效技能'); const grp = (info.skills || []).find(x => x.cat === b.cat); label = L[i]; val = grp ? +grp.v[i] : 1; key = b.cat + ':' + i; }
+    else if (b.kind === 'stat') { const S = STAT_KEYS.find(x => x[1] === b.key); if (!S) return bad(res, '无效属性'); label = S[0]; val = +((info.stats || {})[b.key]) || 0; key = 'st:' + b.key; }
+    else return bad(res, '无效行动');
+    const W = w4Of(r), now = Date.now(), C = W.cd[me] = W.cd[me] || { any: 0, k: {} }, sec = t => Math.ceil((t - now) / 1000);
+    if (now < C.any) return bad(res, '行动冷却中 · ' + sec(C.any) + ' 秒后可再次骰点', 409);
+    if (now < (C.k[key] || 0)) return bad(res, '【' + label + '】冷却中 · ' + sec(C.k[key]) + ' 秒', 409);
+    C.any = now + W4_CD_ANY; C.k[key] = now + (b.kind === 'skill' && b.cat === 'fix' ? W4_CD_FIX : W4_CD_SKILL);
+    const roll = crypto.randomInt(1, 101), lv = rollLevel(roll, val), ok = /成功/.test(lv);
+    const tK = target === '物理防御' ? 'p' : target === '特殊防御' ? 's' : '', tP = target === '自己' ? me : (target && Object.keys(r.members).find(x => memberInfo(r, x).name === target)) || '';
+    const W5 = w4Of(r), dockTry = !tP && W5.dock === 'broken' && baseLoc(getUser(me)) === 'airlock' && b.kind === 'skill' && b.cat === 'fix';
+    const PZ0 = w4Pz(r), loc0 = baseLoc(getUser(me)), nd0 = PZ0.nodes[loc0], gateFix = !dockTry && !tP && b.kind === 'skill' && b.cat === 'fix' && !!nd0 && nd0.k < W4PZ.PER && !PZ0.door, gateRes = b.kind === 'skill' && b.cat === 'res' && +b.idx === 0 && loc0 === W4PZ.HACK && W4PZ.total(PZ0) >= W4PZ.MAX && !PZ0.door, gateCi = b.kind === 'skill' && b.cat === 'res' && +b.idx === 2 && loc0 === W4PZ.CI_LAB && ((PZ0.ci || {}).g || 0) < 3;
+    if (gateFix && ok) PZ0.unl[me + ':' + loc0] = true; if (gateRes && ok) PZ0.hunl[me] = true; if (gateCi && ok) { PZ0.ci = PZ0.ci || { g: 0, ok: {}, lk: {} }; PZ0.ci.g = (PZ0.ci.g || 0) + 1; }
+    let fix = gateFix ? (ok ? '\n门禁线路检修口已打开 · 可以开始桥接' : '\n未能打开门禁线路检修口') : gateRes ? (ok ? '\n已接入门禁程序 · 可以开始骇入' : '\n未能接入门禁程序') : gateCi ? (ok ? '\n解析出一条密文语法：' + W4PZ.CI_RULES[PZ0.ci.g - 1][0] : '\n未能解析出新的语法') : dockTry ? (ok ? '\n对接模块紧急修复完成 · 双向气阀恢复工作' : '\n对接模块紧急修复失败 · 气阀仍未响应') : tP ? '' : w4Repair(r, me, lv, tK); if (dockTry && ok) W5.dock = 'ok';
+    if (tP && ok && (label === '生理急救' || label === '医学治疗')) { const tn = memberInfo(r, tP).name, i0 = mGet(r, tP), mx = hpMaxOf(i0 && i0.stats);
+      if (isDead(r, tP)) fix = '\n【' + tn + '】已死亡，无法救治';
+      else if (label === '生理急救') { const n = lv === '大成功' ? crypto.randomInt(1, 4) : 1, got = w4Heal(r, tP, n); fix = '\n【' + tn + '】HP +' + got + ' → ' + hpNow(mGet(r, tP)) + '/' + mx; }
+      else { const W0 = w4Of(r); W0.treat = W0.treat || {}; W0.treat[tP] = { loc: w4LocOf(r, tP), next: Date.now() + W4_HEAL_GAP, by: info.name }; let im = ''; if (lv === '大成功') { const got = w4Heal(r, tP, crypto.randomInt(1, 4)); im = ' · 立即 HP +' + got; } fix = '\n【' + tn + '】开始接受医学治疗' + im + ' · 之后每 10 分钟恢复 1d3 HP，离开所在舱室即中断'; } }
+    gameLog(r, '【' + info.name + '】' + on + (item ? '借助【' + item + '】' : '') + '进行【' + label + '】检定\nD100=' + roll + '/' + val + ' ' + lv + fix, 'roll', lv);
+    if (dockTry && ok) w4Bc(r, '气密兼对接模块双向气阀已恢复 · 先锋舰可以开始接驳');
+    if (lv === '大失败') { const mi0 = mGet(r, me); if (mi0) mSet(r, me, 'er', Math.min(100, (+mi0.er || 0) + 20)); }
+    w4Scan(r); mainSave(r); return res.json({ room: fieldOut(req.params.id) });
+  }
   if (!g.free && g.order[g.turn] !== me) return bad(res, '还没轮到你', 409);
   if ((g.free || r.main) && !(r.gm && Date.now() - r.gm.t < 30000)) return bad(res, '当前没有调度员在线，暂时无法申请行动', 409);
   if (g.state !== 'act') return bad(res, '已有待处理的申请', 409);
@@ -1023,7 +1070,7 @@ api.post('/field/rooms/:id/say', auth, once, (req, res) => {
   const asGm = !!b.gm && isAdmin(req.user.id); if (!asGm && !r.members[req.user.id]) return bad(res, '你不在该舰上', 403); if (!asGm && ((g.mad || {})[req.user.id] || {}).no === 9) return bad(res, '你无法组织语言', 403); if (!asGm && ((g.mad || {})[req.user.id] || {}).no === 1) return bad(res, '你处于昏迷中，无法 RP', 403); if (!asGm && isDead(r, req.user.id)) return bad(res, '你已死亡', 403);
   const to = asGm && b.to && r.members[b.to] ? b.to : '';
   { const lk = (asGm ? 'gm:' : '') + req.user.id, now = Date.now(), ls = (g.lastSay = g.lastSay || {})[lk]; if (ls && ls.text === text && now - ls.t < 8000) return res.json({ room: fieldOut(req.params.id, isAdmin(req.user.id)) }); g.lastSay[lk] = { text, t: now }; }
-  if (asGm) { const as = GM_AS[b.as] ? b.as : 'narr'; gameLog(r, '【' + GM_AS[as] + '】：' + text, 'gm', as, to ? { to } : null); } else gameLog(r, '【' + memberInfo(r, req.user.id).name + '】：' + text, 'rp', !r.fun && g.order[g.turn] !== req.user.id ? 'off' : '');
+  if (asGm) { const as = GM_AS[b.as] ? b.as : 'narr'; gameLog(r, '【' + GM_AS[as] + '】：' + text, 'gm', as, to ? { to } : null); } else gameLog(r, '【' + memberInfo(r, req.user.id).name + '】：' + text, 'rp', !r.fun && !g.free && g.order[g.turn] !== req.user.id ? 'off' : '');
   res.json({ room: fieldOut(req.params.id, isAdmin(req.user.id)) });
 });
 api.post('/field/rooms/:id/funstart', auth, once, (req, res) => {
@@ -1191,7 +1238,7 @@ const gmHandler = (req, res) => {
     if (lv === '大失败' && !b.hide) mSet(r, b.uid, 'er', Math.min(100, (+i.er || 0) + 20));
   }
   else if (b.op === 'dog') {
-    if (r.main) return bad(res, '主舰没有机器狗');
+    if (r.main || r.w4) return bad(res, '主舰没有机器狗');
     if (g.dogUsed) return bad(res, '机器狗本次外勤已使用', 409);
     if (isDead(r, b.uid)) return bad(res, '该成员已死亡'); if (hpNow(i) > 0) return bad(res, '只能对 HP 归零的濒死成员使用');
     mSet(r, b.uid, 'hp', Math.min(5, hpMaxOf(i.stats))); mSet(r, b.uid, 'er', Math.min(100, (+i.er || 0) + 20)); g.dogUsed = true;
@@ -1207,6 +1254,7 @@ const gmHandler = (req, res) => {
     else { m.items = m.items || []; if (m.items.length >= cap) return bad(res, '随身背包已满（' + cap + '）'); m.items.push(d.item); if (!m.bot) { const uu = d.from && getUser(b.uid); if (d.temp) m.temps = [...(m.temps || []), d.item]; else if (uu) db.prepare('update users set ' + d.from + ' = ? where id = ?').run(JSON.stringify([...listOf(uu, d.from), d.item]), b.uid); else m.lootCarry = [...(m.lootCarry || []), d.item]; } }
     D.splice(+b.idx, 1); gameLog(r, '【' + nm + '】的【' + d.item + '】被归还', 'item'); }
   else return bad(res, '无效操作');
+  if (r.w4) w4Scan(r);
   res.json({ room: fieldOut(req.params.id, isAdmin(req.user.id)) });
 };
 api.post('/field/rooms/:id/gm', auth, admin, once, gmHandler);
@@ -1224,11 +1272,11 @@ api.post('/field/rooms/:id/again', auth, admin, once, (req, res) => {
 api.post('/field/rooms/:id/end', auth, admin, (req, res) => {
   const r0 = FIELD[req.params.id]; if (!r0) return bad(res, '无效舰船', 404);
   [...new Set([...Object.keys(r0.members), ...Object.keys((r0.game || {}).loot || {})])].forEach(x => { const m = r0.members[x] || {}, L = [...(((r0.game || {}).loot || {})[x] || []), ...(m.lootCarry || [])]; if (m.bot || /^bot/.test(x) || !L.length) return; const uu = getUser(x); if (uu) db.prepare('update users set gained = ? where id = ?').run(JSON.stringify([...listOf(uu, 'gained'), ...L]), x); });
-  if (r0.main) mainClear(); FIELD[req.params.id] = r0.main ? mkMain() : r0.liar ? mkLiar() : r0.bj ? mkBJ() : r0.fun ? mkFun() : { members: {}, started: false }; fieldBots(req.params.id); res.json({ room: fieldOut(req.params.id, true) });
+  if (r0.main || r0.w4) mainClear(r0); FIELD[req.params.id] = r0.w4 ? mkW4() : r0.main ? mkMain() : r0.liar ? mkLiar() : r0.bj ? mkBJ() : r0.fun ? mkFun() : { members: {}, started: false }; fieldBots(req.params.id); res.json({ room: fieldOut(req.params.id, true) });
 });
 api.post('/field/rooms/:id/reset', auth, admin, (req, res) => {
   if (!FIELD[req.params.id]) return bad(res, '无效舰船', 404);
-  if (FIELD[req.params.id].main) mainClear(); FIELD[req.params.id] = FIELD[req.params.id].main ? mkMain() : FIELD[req.params.id].liar ? mkLiar() : FIELD[req.params.id].bj ? mkBJ() : FIELD[req.params.id].fun ? mkFun() : { members: {}, started: false }; fieldBots(req.params.id); res.json({ room: fieldOut(req.params.id, true) });
+  if (FIELD[req.params.id].main || FIELD[req.params.id].w4) mainClear(FIELD[req.params.id]); FIELD[req.params.id] = FIELD[req.params.id].w4 ? mkW4() : FIELD[req.params.id].main ? mkMain() : FIELD[req.params.id].liar ? mkLiar() : FIELD[req.params.id].bj ? mkBJ() : FIELD[req.params.id].fun ? mkFun() : { members: {}, started: false }; fieldBots(req.params.id); res.json({ room: fieldOut(req.params.id, true) });
 });
 
 // ---- 一览 · 飞船状态 ----
@@ -1243,7 +1291,7 @@ const SHIP_DEF = () => ({ def: {}, imgs: {}, lost: [], R: 0, legs: [{ r: 6, n: 1
 const shipGet = () => { try { const x = db.prepare("select v from kv where k = 'ship'").get(); return { ...SHIP_DEF(), ...(x ? JSON.parse(x.v) : {}) }; } catch (e) { return SHIP_DEF(); } };
 const defOf = (s, id) => ({ p: 30, s: 30, ana: true, med: true, ...(((s || {}).def || {})[id] || {}) });
 const shipSet = s => db.prepare("insert or replace into kv(k, v) values('ship', ?)").run(JSON.stringify(s));
-const sortieOf = id => { for (const k of Object.keys(FIELD)) { const r = FIELD[k]; if (!r.main && !r.fun && r.started && r.members[id]) return 'sc' + k; } return ''; };
+const sortieOf = id => { for (const k of Object.keys(FIELD)) { const r = FIELD[k]; if (!r.main && !r.w4 && !r.fun && r.started && r.members[id]) return 'sc' + k; } return ''; };
 const HABS = ['hab1', 'hab2'], randHab = () => HABS[crypto.randomInt(0, 2)];
 // 首次上线：仅给还没有位置的成员随机分配到两个居住模块（只填空值，永不覆盖已有位置；用数据库标记保证只执行一次）
 if (!db.prepare("select 1 from kv where k = 'ship_seeded'").get()) {
@@ -1258,10 +1306,187 @@ const shipOut = me => ({
   crew: db.prepare('select id, name, dept, loc, dead from users').all().map(u => ({ id: u.id, name: realName(u.id, u.name), dept: u.dept || '', loc: sortieOf(u.id) || baseLoc(u), dead: !!u.dead }))
 });
 api.get('/ship', auth, (req, res) => res.json(shipOut(req.user.id)));
+const W4PZ = (() => {
+  const R = n => Math.floor(Math.random() * n), rot = (m, k) => { k = ((k % 4) + 4) % 4; while (k--) m = ((m << 1) | (m >> 3)) & 15; return m; };
+  const NODES = [['airlock', '气密兼对接模块'], ['truss', '三级总控'], ['dock', '实验兼多功能对接模块']], HACK = 'truss', PER = 12, MAX = 36, HPER = 12, CODES = ['1C', '55', 'BD', 'E9', '7A', 'FF'];
+  const DIRS = [[-1, 0, 1, 4], [0, 1, 2, 8], [1, 0, 4, 1], [0, -1, 8, 2]];
+  function powered(c, rots) { const n = c.n, m = c.m.map((x, i) => rot(x, (rots && rots[i]) || 0)), st = c.sr * n, seen = new Set(); if (!(m[st] & 8)) return { seen, ok: false, m }; seen.add(st); const q = [st]; let ok = false;
+    while (q.length) { const i = q.shift(), r = Math.floor(i / n), cc = i % n; if (r === c.er && cc === n - 1 && (m[i] & 2)) ok = true;
+      DIRS.forEach(([dr, dc, bit, op]) => { if (!(m[i] & bit)) return; const a = r + dr, b = cc + dc; if (a < 0 || b < 0 || a >= n || b >= n) return; const j = a * n + b; if (seen.has(j) || !(m[j] & op)) return; seen.add(j); q.push(j); }); }
+    return { seen, ok, m }; }
+  const circOk = (c, rots) => powered(c, rots).ok;
+  function circGen(n) { n = n || 5;
+    for (let t = 0; t < 400; t++) { const sr = R(n), er = R(n), seen = new Set(), path = []; let steps = 0;
+      const dfs = (r, c) => { if (++steps > 4000) return false; path.push([r, c]); seen.add(r * n + c); if (r === er && c === n - 1) { if (path.length >= n + 3) return true; } else { const ds = DIRS.slice().sort(() => Math.random() - 0.5); for (const [dr, dc] of ds) { const a = r + dr, b = c + dc; if (a < 0 || b < 0 || a >= n || b >= n || seen.has(a * n + b)) continue; if (dfs(a, b)) return true; } } path.pop(); seen.delete(r * n + c); return false; };
+      if (!dfs(sr, 0)) continue;
+      const sol = Array.from({ length: n * n }, () => rot([5, 3, 7, 3][R(4)], R(4)));
+      path.forEach(([r, c], i) => { let m = 0; [path[i - 1], path[i + 1]].forEach(p => { if (p) DIRS.forEach(([dr, dc, bit]) => { if (r + dr === p[0] && c + dc === p[1]) m |= bit; }); }); if (i === 0) m |= 8; if (i === path.length - 1) m |= 2; sol[r * n + c] = m; });
+      const c0 = { n, sr, er, m: sol.map(x => rot(x, R(4))) }; if (circOk(c0)) continue; return c0; }
+    return null; }
+  function hexGen(n, buf, len) { n = n || 5; buf = buf || 6; len = len || 3;
+    for (let t = 0; t < 400; t++) { const g = Array.from({ length: n * n }, () => CODES[R(CODES.length)]), used = new Set(); let r = 0, c = R(n), ok = true; const p = [[r, c]]; used.add(c);
+      for (let i = 1; i < buf; i++) { const o = []; for (let k = 0; k < n; k++) { const a = i % 2 ? k : r, b = i % 2 ? c : k; if (!used.has(a * n + b)) o.push([a, b]); } if (!o.length) { ok = false; break; } [r, c] = o[R(o.length)]; used.add(r * n + c); p.push([r, c]); }
+      if (!ok) continue; const k0 = R(buf - len + 1); return { n, buf, g, seq: p.slice(k0, k0 + len).map(([a, b]) => g[a * n + b]) }; }
+    return null; }
+  function hexOk(h, path) { if (!Array.isArray(path) || !path.length || path.length > h.buf) return false; const n = h.n, used = new Set(); let pr = -1, pc = -1;
+    for (let i = 0; i < path.length; i++) { const r = +(path[i] || [])[0], c = +(path[i] || [])[1]; if (!(r >= 0 && c >= 0 && r < n && c < n) || used.has(r * n + c)) return false; if (i === 0 ? r !== 0 : i % 2 ? c !== pc : r !== pr) return false; used.add(r * n + c); pr = r; pc = c; }
+    return (' ' + path.map(([r, c]) => h.g[r * n + c]).join(' ') + ' ').includes(' ' + h.seq.join(' ') + ' '); }
+  const CI_ROOTS = [['S', '前进'], ['T', '我们'], ['U', '投信石'], ['V', '摇篮'], ['W', '进食'], ['X', '珊瑚'], ['Y', '存在'], ['Z', '他者'], ['α', '天空 · 冰壳']], CI_RULES = [['反相', '谱线倒置 · 方向相反'], ['断线', '谱线中断 · 破碎 / 无法'], ['空段', '句末空白段 · 疑问']], CI_LAB = 'lab';
+  const CI_GLOSS = ['我们', '家', '我们的天空', '前进', '暗流', '人类', '天空断裂', '异常地涌动', '后退', '我', '深蓝色', '无法逃离', '母亲', '恐惧', '消失', '存在', '进食', '何处？', '灰白色', '彼此', '他者', '摇篮', '愿景', '生存'];
+  const CI_SENTS = [{ segs: [[['T', 1], ['α', 1]], [['α', 1, 'd']]], ans: ['我们的天空', '天空断裂'], tr: '冰壳（他们的天空）在断裂' }, { segs: [[['U', 2], ['S', 1]], [['Z', 2], ['S', 1]]], ans: ['暗流', '异常地涌动'], tr: '暗流异常涌动' }, { segs: [[['T', 1]], [['S', 1, 'rd']]], ans: ['我们', '无法逃离'], tr: '我们无力逃离' },
+    { segs: [[['T', 0.5]], [['Z', 1], ['W', 1]]], ans: ['我', '恐惧'], tr: '我害怕' }, { segs: [[['T', 1]], [['Y', 1]], []], ans: ['我们', '存在', '何处？'], tr: '族群在哪里' }, { segs: [[['T', 1]], [['T', 0.5], ['T', 0.5]], [['V', 1]]], ans: ['我们', '彼此', '摇篮'], tr: '让我们彼此依靠' }];
+  const ciOk = (i, a) => { const s = CI_SENTS[i]; return !!s && Array.isArray(a) && a.length === s.ans.length && s.ans.every((x, k) => CI_GLOSS[+a[k]] === x); };
+  const fresh = v => ({ v: (v || 0) + 1, nodes: Object.fromEntries(NODES.map(([id]) => [id, { k: 0, c: circGen(5), by: [] }])), hack: hexGen(5, 6, 3), hackDone: '', hk: 0, ci: { g: 0, ok: {}, lk: {} }, lock: 0, door: false, breach: false, unl: {}, hunl: {}, reveal: false });
+  const fix = pz => { if (!pz) return fresh(0); NODES.forEach(([id]) => { const x = pz.nodes[id] = pz.nodes[id] || { k: 0, c: circGen(5), by: [] }; if (x.k == null) { x.k = x.done ? PER : 0; x.by = x.by || []; } }); pz.unl = pz.unl || {}; pz.hunl = pz.hunl || {}; pz.hk = pz.hk || 0; pz.ci = pz.ci || { g: 0, ok: {}, lk: {} }; return pz; };
+  const total = pz => NODES.reduce((a, [id]) => a + Math.min(PER, ((pz.nodes[id] || {}).k) || 0), 0);
+  function view(pz, loc, now, uid) { const tot = total(pz), nd = pz.nodes[loc], open = !!nd && nd.k < PER && !pz.door, unl = open && !!pz.unl[uid + ':' + loc], hkOpen = loc === HACK && tot >= MAX && !pz.door, hunl = hkOpen && !!pz.hunl[uid];
+    const o = { v: pz.v, nodes: NODES.map(([id, name]) => ({ id, name, k: Math.min(PER, pz.nodes[id].k || 0) })), tot, max: MAX, per: PER, hackDone: pz.hackDone, hk: Math.min(HPER, pz.hk || 0), hper: HPER, door: !!pz.door, breach: !!pz.breach, lock: Math.max(0, (pz.lock || 0) - now), here: loc, reveal: !!pz.reveal, lab: loc === CI_LAB, ci: (() => { const ci = pz.ci || { g: 0, ok: {}, lk: {} }, lk = {}; CI_SENTS.forEach((_, i) => { const t0 = ((ci.lk || {})[uid + ':' + i] || 0) - now; if (t0 > 0) lk[i] = t0; }); return { g: ci.g || 0, ok: ci.ok || {}, lk }; })(),
+      bridge: !!nd || loc === HACK, nodeOpen: open, nodeK: nd ? Math.min(PER, nd.k) : 0, nodeDone: !!nd && nd.k >= PER && !pz.door, needFix: open && !unl, needRes: hkOpen && !hunl, hackWait: loc === HACK && tot < MAX && !pz.door && !open };
+    if (unl) o.circ = { id: loc, k: nd.k, n: nd.c.n, sr: nd.c.sr, er: nd.c.er, m: nd.c.m };
+    if (hunl) o.hack = { n: pz.hack.n, buf: pz.hack.buf, g: pz.hack.g, seq: pz.hack.seq };
+    return o; }
+  function noisy(t, p) { p = Math.max(0, Math.min(100, +p || 0)) / 100; if (!p) return t; const G = '█▓▒░#%&*@~'; let o = ''; for (const ch of String(t)) { const x = Math.random(); o += x < p * 0.4 ? G[R(G.length)] : x < p * 0.6 ? '' : x < p * 0.68 ? '…' : ch; } return o.replace(/…+/g, '…'); }
+  return { rot, powered, circOk, circGen, hexGen, hexOk, fresh, fix, total, view, noisy, NODES, HACK, PER, MAX, HPER, CI_ROOTS, CI_RULES, CI_GLOSS, CI_SENTS, CI_LAB, ciOk };
+})();
+// ===== WEEK4 主舰：自由行动 + 模块防御衰减 / 维修 / 撕卡通知 =====
+const W4_MODS = ['airlock', 'rcs', 'lab', 'dock', 'farm', 'med', 'hab1', 'hab2', 'truss'];
+const W4_NAME = { cockpit: '驾驶兼总控模块', airlock: '气密兼对接模块', rcs: '姿控推进模块', lab: '主实验模块', dock: '实验兼多功能对接模块', farm: '仓储兼种植模块', med: '生活兼医疗模块', hab1: '乘员居住模块 I', hab2: '乘员居住模块 II', ring: '重力环', truss: '三级总控', gen: '发电机模块', fuel: '燃料仓', fusion: '可控聚变反应堆', drive: '等离子推进模块' };
+const W4_ER_GAP = 10 * 60e3, W4_CD_SKILL = 3 * 60e3, W4_CD_FIX = 100e3, W4_HEAL_GAP = 10 * 60e3, W4_CD_ANY = 100e3, W4_RATE = { low: 60e3, mid: 40e3, high: 20e3 }, W4_SUIT_N = 10, W4_BCD = 5 * 60e3;
+const W4_BCD_LINES = { 5: '警告：驾驶兼总控模块结构完整性急剧下降 · 所有人员立即撤离舰桥', 4: '警告：舰桥外壳出现贯穿裂纹 · 剧烈震动 · 撤离通道仍可使用', 3: '红色警报：大量不明生物正在撞击舰桥外壳', 2: '红色警报：舰桥即将失压 · 未穿戴宇航服人员远离气密兼对接模块', 1: '最终警告：舰桥结构将在 60 秒内崩解' };
+const w4Pz = r => { const W = w4Of(r); return W.pz = W4PZ.fix(W.pz); };
+const W4_PRE0 = ["驾驶兼总控模块已锁定 · 机械维修人员请检修门禁线路","门禁供电已恢复 · 请前往三级总控接管门禁程序","异常能量读数急剧上升 · 全体船员保持警戒","舰桥已锁定 · 导航系统拒绝一切外部指令","即将机动规避鱼群 · 请抓紧固定物","舱体多处受损 · 维修人员请前往各模块","跃迁准备程序已启动 · 请远离推进模块","所有先锋舰请速回主舰 · 重复，请速回主舰","舰桥舱门已开启 · 导航系统仍处于锁定状态"];
+let W4_PRE = (() => { try { const x = db.prepare("select v from kv where k = 'w4_presets'").get(); const a = x && JSON.parse(x.v); return Array.isArray(a) ? a : W4_PRE0.slice(); } catch (e) { return W4_PRE0.slice(); } })();
+function w4Bc(r, text, opt) { opt = opt || {}; const W = w4Of(r), noise = opt.noise != null ? +opt.noise : (W.noise != null ? W.noise : 40), sc = opt.scope || 'all';
+  if (sc !== 'van') gameLog(r, '【广播】：' + text, 'gm', 'bc'); if (sc === 'main') return;
+  Object.keys(FIELD).forEach(k => { const o = FIELD[k]; if (o === r || o.fun || o.main || o.w4 || !o.started || !o.game) return; gameLog(o, '【主舰广播 · 信号' + (noise >= 60 ? '极差' : noise >= 25 ? '不稳' : '良好') + '】：' + W4PZ.noisy(text, noise), 'gm', 'bc'); }); }
+const w4Of = r => { const g = r.game; return g.w4 = g.w4 || { on: { p: false, s: false }, rate: 'mid', t0: 0, boom: 0, next: {}, focus: {}, zero: {}, alerts: [], aSeq: 0, ack: {}, cd: {}, suit: {}, suits: W4_SUIT_N, foam: {} }; };
+const w4Occ = (r, mod) => Object.keys(r.members).filter(x => !r.members[x].bot && !isDead(r, x) && baseLoc(getUser(x)) === mod);
+const w4Out = r => { const W = w4Of(r), me = CUR_VIEWER, now = Date.now(), C = W.cd[me] || { any: 0, k: {} };
+  return { on: W.on, rate: W.rate, started: !!W.t0, el: W.t0 ? now - W.t0 : 0, bcd: W.bcd ? Math.max(0, W.bcd - now) : 0, dock: W.dock || '', vdock: W.vdock || {}, noise: W.noise != null ? W.noise : 40, erGap: W.erGap || 10, pz: W4PZ.view(w4Pz(r), me ? baseLoc(getUser(me)) : '', now, me), cgs: me && isAdmin(me) ? (W.cgs || []) : [], presets: me && isAdmin(me) ? W4_PRE : [], boom: W.boom || 0, suits: W.suits, suit: !!W.suit[me], cdAny: Math.max(0, C.any - now), cdK: Object.fromEntries(Object.entries(C.k).filter(([, t]) => t > now).map(([k, t]) => [k, t - now])), alerts: me && isAdmin(me) ? W.alerts : [], foam: W.foam }; };
+function w4Alert(r, kind, target, text) { const W = w4Of(r), k = kind + ':' + target; if (W.ack[k] || W.alerts.some(a => a.k === k)) return; W.alerts.push({ id: ++W.aSeq, k, kind, target, text, t: Date.now() }); gameLog(r, '〔调度提醒〕' + text, 'sys', '', { hide: true }); }
+function w4Scan(r) {
+  const W = w4Of(r), sh = shipGet(), br = sh.broken || [], live = {};
+  [...W4_MODS, 'cockpit'].forEach(m => { const k = 'mod:' + m; if (defOf(sh, m).p <= 0 && !br.includes(m) && !sh.lost.includes(m)) { live[k] = 1; w4Alert(r, 'mod', m, W4_NAME[m] + '物理防御归零 · 是否判定模块损坏？'); } });
+  Object.keys(r.members).forEach(x => { if (r.members[x].bot || isDead(r, x)) return; const i = mGet(r, x); if (!i) return; const nm = memberInfo(r, x).name;
+    if (hpNow(i) <= 0) { live['hp:' + x] = 1; w4Alert(r, 'hp', x, '【' + nm + '】HP 归零 · 体质检定 / 判定死亡'); }
+    if ((+i.er || 0) >= 100) { live['er:' + x] = 1; w4Alert(r, 'er', x, '【' + nm + '】ER 已满 · 是否消散为泡沫？'); } });
+  Object.keys(W.ack).forEach(k => { if (!live[k] && !k.startsWith('boom:')) delete W.ack[k]; });
+  W.alerts = W.alerts.filter(a => a.kind === 'boom' ? !isDead(r, a.target) : live[a.k]);
+}
+function w4Kill(r, x, foam, why) { const g = r.game; g.dead = g.dead || {}; if (g.dead[x]) return; g.dead[x] = true; delete (g.mad || {})[x]; delete (g.pendMad || {})[x]; const nm = memberInfo(r, x).name; if (foam) w4Of(r).foam[x] = true; gameLog(r, foam ? '【' + nm + '】的轮廓开始起泡、透明……化作了泡沫' : '【' + nm + '】死亡' + (why ? '（' + why + '）' : ''), 'dead'); if (r.members[x] && !r.members[x].bot) db.prepare('update users set dead = 1 where id = ?').run(x); }
+function w4Break(r, mod) { const sh = shipGet(); sh.broken = [...new Set([...(sh.broken || []), mod])]; shipSet(sh); gameLog(r, '【广播】：' + W4_NAME[mod] + '结构损毁！相邻舱段已封锁，需穿戴宇航服通行', 'gm', 'bc');
+  db.prepare('select id, loc from users where dead = 0 or dead is null').all().forEach(u => { if (!sortieOf(u.id) && baseLoc(u) === mod) { if (r.members[u.id]) w4Kill(r, u.id, false, '模块损毁'); else db.prepare('update users set dead = 1 where id = ?').run(u.id); } }); }
+function w4Boom(r) { const W = w4Of(r); if (W.boom) return; W.boom = Date.now(); const sh = shipGet(); sh.broken = [...new Set([...(sh.broken || []), 'cockpit'])]; sh.boom = W.boom; sh.def = sh.def || {}; sh.def.airlock = { ...(sh.def.airlock || {}), p: Math.min(defOf(sh, 'airlock').p, 6) }; shipSet(sh); W.dock = 'broken'; W.bcd = 0;
+  Object.keys(FIELD).forEach(k => { const o = FIELD[k]; if (o.fun || !o.started || !o.game) return; const fx = o.game.fx = o.game.fx || {}; fx.boom = (fx.boom || 0) + 1; gameLog(o, o.main || o.w4 ? '【广播】：警告——驾驶兼总控模块发生爆炸！' : '【广播】：主舰方向传来强烈闪光——MSV-05 驾驶模块发生爆炸！', 'gm', 'bc'); });
+  w4Occ(r, 'cockpit').forEach(x => w4Alert(r, 'boom', x, '【' + memberInfo(r, x).name + '】身处爆炸的驾驶模块 · 是否判定死亡？'));
+  w4Occ(r, 'airlock').filter(x => !W.suit[x]).forEach(x => w4Alert(r, 'boom', x, '【' + memberInfo(r, x).name + '】在相邻的气密兼对接模块且未穿宇航服 · 是否判定死亡？'));
+  gameLog(r, '【广播】：气密兼对接模块受到冲击 · 双向气阀失效 · 需要紧急维修才能接驳先锋舰', 'gm', 'bc'); mainSave(r); }
+function w4Heal(r, x, n) { const i = mGet(r, x); if (!i) return 0; const mx = hpMaxOf(i.stats), cur = hpNow(i), nv = Math.min(mx, cur + n); if (nv !== cur) mSet(r, x, 'hp', nv); return nv - cur; }
+const w4LocOf = (r, x) => (r.members[x] && r.members[x].bot) ? 'bot' : baseLoc(getUser(x));
+function w4Repair(r, me, lv, kf) {
+  const mod = baseLoc(getUser(me)), sh = shipGet(); if (![...W4_MODS, 'cockpit'].includes(mod) || (sh.broken || []).includes(mod) || sh.lost.includes(mod)) return '';
+  const d = defOf(sh, mod), k = kf || (d.s < d.p ? 's' : 'p'), dl = lv === '大成功' ? 5 : lv === '大失败' ? -5 : /成功/.test(lv) ? crypto.randomInt(1, 4) : 0, nm = W4_NAME[mod] + (k === 'p' ? '物理' : '特殊') + '防御';
+  if (!dl) return ''; if (dl > 0 && d[k] >= 30) return '\n' + W4_NAME[mod] + '防御完好';
+  const nv = Math.max(0, Math.min(30, d[k] + dl)); sh.def[mod] = { ...(sh.def[mod] || {}), [k]: nv }; shipSet(sh);
+  return '\n' + nm + ' ' + (nv >= d[k] ? '+' : '') + (nv - d[k]) + ' → ' + nv + '/30';
+}
+function w4Tick() {
+  const r = FIELD[W4_ID]; if (!r || !r.game) return; const W = w4Of(r), now = Date.now(); let sh = null, dirty = false, save = false;
+  if (W.bcd && !W.boom) { const left = W.bcd - now, step = Math.ceil(left / 60e3); if (left <= 0) { W.bcd = 0; w4Boom(r); } else if (step !== W.bcdStep) { W.bcdStep = step; save = true; if (W4_BCD_LINES[step]) w4Bc(r, W4_BCD_LINES[step], { scope: 'main' }); const fx = r.game.fx = r.game.fx || {}; fx.hit = (fx.hit || 0) + 1; } }
+  ['p', 's'].forEach(k => { if (!W.on[k]) return; if (!W.next[k]) W.next[k] = now + W4_RATE[W.rate]; if (now < W.next[k]) return; W.next[k] = now + (W4_RATE[W.rate] || W4_RATE.mid);
+    sh = sh || shipGet(); const live = W4_MODS.filter(m => !sh.lost.includes(m) && !(sh.broken || []).includes(m) && defOf(sh, m)[k] > 0); if (!live.length) return;
+    let f = W.focus[k]; if (!live.includes(f) || crypto.randomInt(0, 4) === 0) f = W.focus[k] = live[crypto.randomInt(0, live.length)];
+    const was = defOf(sh, f)[k], nv = Math.max(0, was - crypto.randomInt(1, 4)); sh.def[f] = { ...(sh.def[f] || {}), [k]: nv }; dirty = save = true;
+    if (live.length > 1 && crypto.randomInt(0, 2)) { const oth = live.filter(m => m !== f), o = oth[crypto.randomInt(0, oth.length)]; sh.def[o] = { ...(sh.def[o] || {}), [k]: Math.max(0, defOf(sh, o)[k] - 1) }; }
+    const lb = W4_NAME[f] + (k === 'p' ? '物理防御' : '特殊防御');
+    if (nv === 0) gameLog(r, '【广播】：' + lb + '已耗尽' + (k === 's' ? '，舱内侵蚀开始' : ''), 'gm', 'bc'); else if (nv <= 10 && was > 10) gameLog(r, '【广播】：' + lb + '告急（' + nv + '/30）', 'gm', 'bc'); });
+  sh = sh || shipGet();
+  [...W4_MODS, 'cockpit'].forEach(m => { if (defOf(sh, m).s > 0 || (sh.broken || []).includes(m)) { delete W.zero[m]; return; } if (!W.zero[m]) { W.zero[m] = now; save = true; return; } if (now - W.zero[m] < (W.erGap || 10) * 60e3) return; W.zero[m] = now; save = true;
+    w4Occ(r, m).forEach(x => { const i = mGet(r, x); if (!i) return; const nv = Math.min(100, (+i.er || 0) + 3); mSet(r, x, 'er', nv); gameLog(r, '舱壁上的阴影在蠕动……你感到一阵眩晕。', 'mad', '', { to: x }); gameLog(r, '〔侵蚀〕【' + memberInfo(r, x).name + '】ER +3 → ' + nv + '（' + W4_NAME[m] + '特殊防御失效）', 'sys', '', { hide: true }); }); });
+  if (dirty) shipSet(sh);
+  Object.keys(W.treat || {}).forEach(x => { const T = W.treat[x], nm = r.members[x] ? memberInfo(r, x).name : x; if (!r.members[x] || isDead(r, x)) { delete W.treat[x]; save = true; return; }
+    if (w4LocOf(r, x) !== T.loc) { delete W.treat[x]; save = true; gameLog(r, '【' + nm + '】离开了治疗所在的舱室，医学治疗中断', 'sys'); return; }
+    if (now < T.next) return; T.next = now + W4_HEAL_GAP; save = true; const got = w4Heal(r, x, crypto.randomInt(1, 4)), i1 = mGet(r, x), mx = hpMaxOf(i1 && i1.stats), cur = hpNow(i1);
+    gameLog(r, '【' + nm + '】医学治疗生效 · HP +' + got + ' → ' + cur + '/' + mx, 'item'); if (cur >= mx) { delete W.treat[x]; gameLog(r, '【' + nm + '】已完全恢复，医学治疗结束', 'sys'); } });
+  const n0 = W.alerts.length; w4Scan(r); if (save || W.alerts.length !== n0) mainSave(r);
+}
+setInterval(() => { try { w4Tick(); } catch (e) { logError('w4', 'tick', e); } }, 5000);
+const SUIT = '宇航服', lootCap = (x, r) => { const bt = r && r.members[x] && r.members[x].bot; return Math.floor((+(((bt ? bt.stats : getUser(x) && statsOf(getUser(x))) || {}).str) || 0) / 20); };
+// 从成员的外勤背包 / 随身背包取出一件物品（随身物品按丢弃同样的规则从永久背包扣除）
+function w4Take(r, x, item) { const g = r.game, m = r.members[x]; if (!m) return false; g.loot = g.loot || {}; const L = g.loot[x] = g.loot[x] || [], li = L.indexOf(item); if (li >= 0) { L.splice(li, 1); return true; }
+  const ci = (m.items || []).indexOf(item); if (ci < 0) return false; m.items.splice(ci, 1); if (m.bot) return true; const ti = (m.temps || []).indexOf(item), lci = (m.lootCarry || []).indexOf(item); if (ti >= 0) { m.temps.splice(ti, 1); return true; } if (lci >= 0) { m.lootCarry.splice(lci, 1); return true; }
+  const uu = getUser(x); if (uu) { const gd = listOf(uu, 'gained'), ps = listOf(uu, 'personal'), gi = gd.indexOf(item); if (gi >= 0) { gd.splice(gi, 1); db.prepare('update users set gained = ? where id = ?').run(JSON.stringify(gd), x); } else { const pi = ps.indexOf(item); if (pi >= 0) { ps.splice(pi, 1); db.prepare('update users set personal = ? where id = ?').run(JSON.stringify(ps), x); } } } return true; }
+api.post('/field/rooms/:id/suit', auth, once, (req, res) => {
+  const r = fieldRoom(req.params.id), me = req.user.id, op = String((req.body || {}).op || 'take'); if (!r || !r.w4 || !r.game) return bad(res, '无效舰船', 404); if (!r.members[me]) return bad(res, '你不在该舰上', 403); if (isDead(r, me)) return bad(res, '你已死亡', 403);
+  const W = w4Of(r), g = r.game, nm = memberInfo(r, me).name; g.loot = g.loot || {}; const L = g.loot[me] = g.loot[me] || [];
+  if (op === 'take') { const loc = baseLoc(getUser(me)); if (loc !== 'airlock' && loc !== 'med') return bad(res, '只有气密兼对接模块和生活兼医疗模块存放宇航服', 409); if (L.length >= lootCap(me)) return bad(res, '外勤背包已满', 409); if (loc === 'airlock') { if (W.suits <= 0) return bad(res, '气密兼对接模块的宇航服已领完', 409); W.suits--; } L.push(SUIT); gameLog(r, '【' + nm + '】在' + W4_NAME[loc] + '领取了宇航服' + (loc === 'airlock' ? '（剩余 ' + W.suits + ' 套）' : ''), 'item'); }
+  else if (op === 'wear') { if (W.suit[me]) return bad(res, '你已穿着宇航服', 409); if (!w4Take(r, me, SUIT)) return bad(res, '背包里没有宇航服', 409); W.suit[me] = true; gameLog(r, '【' + nm + '】穿上了宇航服', 'item'); }
+  else if (op === 'off') { if (!W.suit[me]) return bad(res, '你没有穿宇航服', 409); if (L.length >= lootCap(me)) return bad(res, '外勤背包已满，无法脱下', 409); W.suit[me] = false; L.push(SUIT); gameLog(r, '【' + nm + '】脱下了宇航服', 'item'); }
+  else return bad(res, '无效操作');
+  mainSave(r); res.json({ room: fieldOut(req.params.id) });
+});
+api.post('/field/rooms/:id/pz', auth, once, (req, res) => {
+  const r = fieldRoom(req.params.id), me = req.user.id, b = req.body || {}; if (!r || !r.w4 || !r.game) return bad(res, '无效舰船', 404); if (!r.members[me]) return bad(res, '你不在该舰上', 403); if (isDead(r, me)) return bad(res, '你已死亡', 403);
+  const W = w4Of(r), pz = w4Pz(r), loc = baseLoc(getUser(me)), nm = memberInfo(r, me).name, now = Date.now();
+  if (b.op === 'ciph') { if (loc !== W4PZ.CI_LAB) return bad(res, '密文终端在主实验模块', 409); const ci = pz.ci = pz.ci || { g: 0, ok: {}, lk: {} }, ci_i = +b.i, ci_k = me + ':' + ci_i; if (!W4PZ.CI_SENTS[ci_i]) return bad(res, '无效密文', 409); if (ci.ok[ci_i]) return bad(res, '这段密文已被破译', 409); if (now < (ci.lk[ci_k] || 0)) return bad(res, '解析冷却中', 409);
+    let cfail = false; if (W4PZ.ciOk(ci_i, b.a)) { ci.ok[ci_i] = nm; gameLog(r, '【密文解意】：「' + W4PZ.CI_SENTS[ci_i].tr + '」（' + nm + '）', 'gm', 'bc'); } else { cfail = true; ci.lk[ci_k] = now + 30e3; }
+    mainSave(r); return res.json({ room: fieldOut(req.params.id), fail: cfail }); }
+  if (pz.door) return bad(res, '舰桥舱门已经打开', 409); let fail = false;
+  if (b.op === 'circ') { const nd = pz.nodes[loc]; if (!nd) return bad(res, '此舱段没有门禁线路'); if (nd.k >= W4PZ.PER) return bad(res, '本舱段线路已全部桥接', 409); if (!pz.unl[me + ':' + loc]) return bad(res, '请先使用机械维修打开检修口', 409);
+    if (!Array.isArray(b.rots) || b.rots.length !== nd.c.m.length || +b.k !== nd.k) return bad(res, '线路已变化，请重试', 409); if (!W4PZ.circOk(nd.c, b.rots.map(x => (+x | 0) & 3))) return bad(res, '线路未接通', 409);
+    nd.k++; nd.by.push(nm); nd.c = W4PZ.circGen(5); const t = W4PZ.total(pz); if (nd.k >= W4PZ.PER) gameLog(r, '【系统】：' + W4_NAME[loc] + '线路已全部桥接', 'gm', 'bc');
+    if (t >= W4PZ.MAX) gameLog(r, '【系统】：舰桥门禁供电恢复 · 门禁程序需在三级总控接管', 'gm', 'bc'); }
+  else if (b.op === 'hack') { if (loc !== W4PZ.HACK) return bad(res, '门禁程序终端在三级总控'); if (W4PZ.total(pz) < W4PZ.MAX) return bad(res, '门禁供电不足', 409); if (!pz.hunl[me]) return bad(res, '请先使用信息重构接入门禁程序', 409); if (now < (pz.lock || 0)) return bad(res, '终端锁定中', 409);
+    if (W4PZ.hexOk(pz.hack, b.path)) { pz.hk = (pz.hk || 0) + 1; pz.hack = W4PZ.hexGen(5, 6, 3); if (pz.hk >= W4PZ.HPER) { pz.hackDone = nm; pz.door = true; gameLog(r, '【系统】：门禁程序接管成功（' + nm + '）· 舰桥舱门已解锁', 'gm', 'bc'); } }
+    else { fail = true; pz.lock = now + 60e3; pz.hack = W4PZ.hexGen(5, 6, 3); gameLog(r, '【系统】：门禁入侵失败（' + nm + '）· 终端锁定 60 秒', 'gm', 'bc'); } }
+  else if (b.op === 'breach') { if (loc !== 'airlock') return bad(res, '只能在气密兼对接模块爆破舰桥舱门'); pz.door = true; pz.breach = true; const sh = shipGet(), d = defOf(sh, 'airlock'); sh.def.airlock = { ...(sh.def.airlock || {}), p: Math.max(0, d.p - 15) }; shipSet(sh); W.suits = Math.max(0, W.suits - 5); const fx = r.game.fx = r.game.fx || {}; fx.hit = (fx.hit || 0) + 1;
+    gameLog(r, '【广播】：舰桥舱门被强行爆破（' + nm + '）！气密兼对接模块结构受损，宇航服柜损毁 5 套', 'gm', 'bc'); }
+  else return bad(res, '无效操作');
+  w4Scan(r); mainSave(r); res.json({ room: fieldOut(req.params.id), fail });
+});
+api.post('/field/rooms/:id/w4', auth, admin, once, (req, res) => {
+  const r = fieldRoom(req.params.id), b = req.body || {}; if (!r || !r.w4 || !r.game) return bad(res, '无效舰船', 404); const W = w4Of(r), now = Date.now();
+  if (b.op === 'tog' && (b.k === 'p' || b.k === 's')) { W.on[b.k] = !W.on[b.k]; W.next[b.k] = 0; if (W.on[b.k] && !W.t0) { W.t0 = now; gameLog(r, '〔调度〕主舰倒计时开始 · 2 小时后驾驶模块爆炸', 'sys', '', { hide: true }); } }
+  else if (b.op === 'rate' && W4_RATE[b.v]) W.rate = b.v;
+  else if (b.op === 'boom') { if (W.boom) return bad(res, '驾驶模块已爆炸', 409); w4Boom(r); }
+  else if (b.op === 'def' && [...W4_MODS, 'cockpit'].includes(b.mod) && (b.k === 'p' || b.k === 's')) { const sh = shipGet(), d = defOf(sh, b.mod); sh.def[b.mod] = { ...(sh.def[b.mod] || {}), [b.k]: Math.max(0, Math.min(30, d[b.k] + Math.round(+b.d || 0))) }; shipSet(sh); }
+  else if (b.op === 'mod' && SHIP_MODS.includes(b.mod)) { if (b.broken) { if ((shipGet().broken || []).includes(b.mod)) return bad(res, '该模块已损坏', 409); w4Break(r, b.mod); } else { const sh = shipGet(); sh.broken = (sh.broken || []).filter(x => x !== b.mod); const d = defOf(sh, b.mod); sh.def[b.mod] = { ...(sh.def[b.mod] || {}), p: Math.max(1, d.p) }; shipSet(sh); gameLog(r, '【广播】：' + W4_NAME[b.mod] + '已完成紧急修复', 'gm', 'bc'); } }
+  else if (b.op === 'alert') { const a = W.alerts.find(x => x.id === +b.id); if (!a) return bad(res, '提醒已失效', 404); const act = String(b.act || '');
+    if (act === 'no') { W.ack[a.k] = true; W.alerts = W.alerts.filter(x => x !== a); }
+    else if (a.kind === 'mod' && act === 'yes') { W.alerts = W.alerts.filter(x => x !== a); w4Break(r, a.target); }
+    else if (a.kind === 'hp' && act === 'con') { const i = mGet(r, a.target), v = +((i && i.stats) || {}).con || 0, roll = crypto.randomInt(1, 101), lv = rollLevel(roll, v); gameLog(r, '【' + memberInfo(r, a.target).name + '】进行【体质】检定\nD100=' + roll + '/' + v + ' ' + lv, 'roll', lv); a.con = lv; }
+    else if ((a.kind === 'hp' || a.kind === 'boom') && act === 'dead') { W.alerts = W.alerts.filter(x => x !== a); w4Kill(r, a.target, false, a.kind === 'boom' ? '爆炸' : ''); }
+    else if (a.kind === 'er' && act === 'foam') { W.alerts = W.alerts.filter(x => x !== a); w4Kill(r, a.target, true); }
+    else return bad(res, '无效操作'); }
+  else if (b.op === 'bc') { const t = str(b.text, 200); if (!t) return bad(res, '请填写广播内容'); const nz = Math.max(0, Math.min(100, Math.round(+b.noise || 0))); W.noise = nz; w4Bc(r, t, { noise: nz, scope: ['main', 'van', 'all'].includes(b.scope) ? b.scope : 'all' }); }
+  else if (b.op === 'erGap' && [10, 5, 2].includes(+b.v)) W.erGap = +b.v;
+  else if (b.op === 'strike') { const sh = shipGet(), live = W4_MODS.filter(m => !sh.lost.includes(m) && !(sh.broken || []).includes(m)), hit = []; for (let i = 0; i < 3 && live.length; i++) { const m = live.splice(crypto.randomInt(0, live.length), 1)[0], d = defOf(sh, m), dp = crypto.randomInt(1, 7), ds = crypto.randomInt(1, 4); sh.def[m] = { ...(sh.def[m] || {}), p: Math.max(0, d.p - dp), s: Math.max(0, d.s - ds) }; hit.push(W4_NAME[m]); gameLog(r, '〔冲击〕' + W4_NAME[m] + ' 物理 −' + dp + ' · 特殊 −' + ds, 'sys', '', { hide: true }); }
+    shipSet(sh); const fx = r.game.fx = r.game.fx || {}; fx.hit = (fx.hit || 0) + 1; w4Bc(r, '舰体遭到鱼群撞击！' + hit.join('、') + '受损', { scope: 'main' }); }
+  else if (b.op === 'bcd') { if (W.boom) return bad(res, '驾驶模块已爆炸', 409); if (b.on) { W.bcd = now + W4_BCD; W.bcdStep = 0; const fx = r.game.fx = r.game.fx || {}; fx.alarm = true; gameLog(r, '〔调度〕舰桥爆炸倒计时开始 · 5 分钟', 'sys', '', { hide: true }); } else { W.bcd = 0; gameLog(r, '〔调度〕舰桥倒计时已取消', 'sys', '', { hide: true }); } }
+  else if (b.op === 'dockFix') { W.dock = W.dock === 'ok' ? 'broken' : 'ok'; if (W.dock === 'ok') w4Bc(r, '气密兼对接模块双向气阀已恢复 · 先锋舰可以开始接驳'); }
+  else if (b.op === 'vdock' && (b.k === '1' || b.k === '2')) { W.vdock = W.vdock || {}; W.vdock[b.k] = !W.vdock[b.k]; if (W.vdock[b.k]) w4Bc(r, '先锋舰' + (b.k === '1' ? '一' : '二') + '号已完成接驳 · 船员正在登舰'); }
+  else if (b.op === 'final') { const fx = r.game.fx = r.game.fx || {}; fx.hit = (fx.hit || 0) + 1; ['舰体结构开始崩解——', 'MSV-05 主控系统强制接管：修正航向 · 修正速度', '航线锁定 · 进入 3R'].forEach(t => w4Bc(r, t, { noise: 0 })); Object.keys(FIELD).forEach(k => { const o = FIELD[k]; if (o !== r && !o.fun && !o.main && !o.w4 && o.started && o.game) { const f2 = o.game.fx = o.game.fx || {}; f2.hit = (f2.hit || 0) + 1; } }); }
+  else if (b.op === 'cg') { const img = b.image || b.url || ''; if (!isImg(img) && !MEDIA_RE.test(img)) return bad(res, '图片格式或大小不支持'); const cap = str(b.cap, 120); W.cgs = [{ url: img, cap }, ...(W.cgs || []).filter(x => x.url !== img)].slice(0, 12);
+    const push = o => { gameLog(o, '【调度】发送了 CG', 'cg', '', { img, by: req.user.id }); if (cap) gameLog(o, cap, 'gm', 'narr'); }; push(r); if (b.sync) Object.keys(FIELD).forEach(k => { const o = FIELD[k]; if (o !== r && !o.fun && !o.main && !o.w4 && o.started && o.game) push(o); }); }
+  else if (b.op === 'pzReset') { W.pz = W4PZ.fresh((W.pz || {}).v); W.pz.reveal = false; gameLog(r, '〔调度〕舰桥门禁谜题已重置', 'sys', '', { hide: true }); }
+  else if (b.op === 'pzNode' && w4Pz(r).nodes[b.id]) { const nd = w4Pz(r).nodes[b.id]; if (nd.k >= W4PZ.PER) { nd.k = 0; nd.by = []; } else { nd.k++; nd.by.push('调度'); } nd.c = W4PZ.circGen(5); }
+  else if (b.op === 'reveal') { const pz = w4Pz(r); pz.reveal = !pz.reveal; }
+  else if (b.op === 'unlock') { const fx = r.game.fx = r.game.fx || {}; fx.unlock = (fx.unlock || 0) + 1; gameLog(r, '〔调度〕发送了「舰桥舱门已解锁」演出', 'sys', '', { hide: true }); }
+  else if (b.op === 'presets' && Array.isArray(b.list)) { W4_PRE = b.list.map(x => str(x, 200)).filter(Boolean).slice(0, 60); try { db.prepare("insert or replace into kv(k, v) values('w4_presets', ?)").run(JSON.stringify(W4_PRE)); } catch (e) {} }
+  else if (b.op === 'pzCi') { const pz = w4Pz(r); pz.ci = pz.ci || { g: 0, ok: {}, lk: {} }; pz.ci.g = ((pz.ci.g || 0) + 1) % 4; }
+  else if (b.op === 'pzHack') { const pz = w4Pz(r); pz.hackDone = pz.hackDone ? '' : '调度'; pz.hk = pz.hackDone ? W4PZ.HPER : 0; pz.door = !!pz.hackDone || pz.breach; }
+  else if (b.op === 'pzDoor') { const pz = w4Pz(r); pz.door = !pz.door; if (pz.door) gameLog(r, '【系统】：舰桥舱门已解锁', 'gm', 'bc'); }
+  else if (b.op === 'reset') { const sh = shipGet(); [...W4_MODS, 'cockpit'].forEach(m => { delete sh.def[m]; }); sh.broken = []; sh.boom = 0; shipSet(sh); r.game.w4 = null; w4Of(r); gameLog(r, '〔调度〕主舰状态已重置', 'sys', '', { hide: true }); }
+  else return bad(res, '无效操作');
+  w4Scan(r); mainSave(r); res.json({ room: fieldOut(req.params.id, true) });
+});
+
 api.post('/ship/move', auth, (req, res) => {
   const to = String((req.body || {}).loc || ''); if (!SHIP_MODS.includes(to)) return bad(res, '无效舱段'); if (SHIP_NOENTRY.includes(to)) return bad(res, '无人舱段，不可进入', 409);
   if (sortieOf(req.user.id)) return bad(res, '外勤中，无法移动', 409);
+  { const R4 = FIELD[W4_ID]; if (to === 'cockpit' && !req.user.dead && R4.started && R4.game && R4.members[req.user.id] && !w4Pz(R4).door) return bad(res, '舰桥舱门已锁定', 409); }
   const s = shipGet();
+  if (!req.user.dead && (s.broken || []).length) { const a = SHIP_MODS.indexOf(baseLoc(req.user)), z = SHIP_MODS.indexOf(to), via = SHIP_MODS.slice(Math.min(a, z), Math.max(a, z) + 1).filter((m, i) => m !== SHIP_MODS[a]); if (via.some(m => s.broken.includes(m)) && !(FIELD[W4_ID].game && w4Of(FIELD[W4_ID]).suit[req.user.id])) return bad(res, '通往该舱段的路线已损毁，需穿戴宇航服', 409); }
   if (!req.user.dead) { if (s.lost.includes(to)) return bad(res, '该舱段已失联', 409); if (s.lost.includes(baseLoc(req.user))) return bad(res, '所在舱段已失联，无法离开', 409); }
   db.prepare('update users set loc = ? where id = ?').run(to, req.user.id); res.json(shipOut(req.user.id));
 });
@@ -1269,6 +1494,7 @@ api.post('/admin/crew/dead', auth, admin, (req, res) => { const b = req.body || 
 api.post('/admin/ship', auth, admin, (req, res) => {
   const b = req.body || {}, s = shipGet();
   if (Array.isArray(b.lost)) { const nl = [...new Set(b.lost.filter(x => SHIP_MODS.includes(x) || x === 'sc1' || x === 'sc2'))], fresh = nl.filter(x => !s.lost.includes(x)); if (fresh.length) db.prepare('select id, loc from users').all().forEach(u => { const so = sortieOf(u.id); if (so ? fresh.includes(so) : fresh.includes(baseLoc(u))) db.prepare('update users set dead = 1 where id = ?').run(u.id); }); s.lost = nl; }
+  if (typeof b.w4 === 'boolean') s.w4 = b.w4;
   if (b.legs != null) {
     if (!Array.isArray(b.legs) || !b.legs.length || b.legs.length > 8) return bad(res, '航段数需为 1–8');
     const L = b.legs.map(l => ({ r: Math.round(+(l || {}).r * 100) / 100, n: Math.floor(+(l || {}).n) }));
