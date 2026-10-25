@@ -640,7 +640,7 @@ function w4Join(r, x) { const g = r.game, m = r.members[x]; if (!g || !m || !m.i
 function w4Start(r) {
   const ids = Object.keys(r.members), hp = {}; ids.forEach(x => { const st = memberInfo(r, x).stats || {}; hp[x] = Math.floor(((+st.siz || 0) + (+st.con || 0)) / 10); });
   r.game = { order: ids.filter(x => !r.members[x].away), turn: 0, round: 1, free: true, state: 'act', pending: null, log: [], seq: 0, hp, mad: {}, pendMad: {}, hurt: {}, hit: {} };
-  try { const sh = shipGet(), opts = ['airlock', 'rcs', 'lab', 'dock', 'farm', 'med', 'hab1', 'hab2', 'truss'].filter(m => !(sh.lost || []).includes(m) && !(sh.broken || []).includes(m)), mv = db.prepare("select id from users where loc = 'cockpit'").all(); if (opts.length) mv.forEach(u => db.prepare('update users set loc = ? where id = ?').run(opts[crypto.randomInt(0, opts.length)], u.id)); if (mv.length) } catch (e) { logError('w4', 'cockpitClear', e); }
+  try { const sh = shipGet(), opts = ['airlock', 'rcs', 'lab', 'dock', 'farm', 'med', 'hab1', 'hab2', 'truss'].filter(m => !(sh.lost || []).includes(m) && !(sh.broken || []).includes(m)), mv = db.prepare("select id from users where loc = 'cockpit'").all(); if (opts.length) mv.forEach(u => db.prepare('update users set loc = ? where id = ?').run(opts[crypto.randomInt(0, opts.length)], u.id)); } catch (e) { logError('w4', 'cockpitClear', e); }
 }
 function w4Drop(r, x) { const g = r.game; if (!g) return; const i = g.order.indexOf(x); if (i >= 0) g.order.splice(i, 1); }
 // 娱乐室 · 秘密投票：不计入外勤 / 舰船位置；全员自由检定，无需调度
