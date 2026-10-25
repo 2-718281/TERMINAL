@@ -641,6 +641,7 @@ function w4Start(r) {
   const ids = Object.keys(r.members), hp = {}; ids.forEach(x => { const st = memberInfo(r, x).stats || {}; hp[x] = Math.floor(((+st.siz || 0) + (+st.con || 0)) / 10); });
   r.game = { order: ids.filter(x => !r.members[x].away), turn: 0, round: 1, free: true, state: 'act', pending: null, log: [], seq: 0, hp, mad: {}, pendMad: {}, hurt: {}, hit: {} };
   gameLog(r, 'WEEK4 行动开始 · 全员 ' + ids.length + ' 人 · 自由行动，骰点即时结算', 'sys');
+  try { const sh = shipGet(), opts = ['airlock', 'rcs', 'lab', 'dock', 'farm', 'med', 'hab1', 'hab2', 'truss'].filter(m => !(sh.lost || []).includes(m) && !(sh.broken || []).includes(m)), mv = db.prepare("select id from users where loc = 'cockpit'").all(); if (opts.length) mv.forEach(u => db.prepare('update users set loc = ? where id = ?').run(opts[crypto.randomInt(0, opts.length)], u.id)); if (mv.length) gameLog(r, '驾驶兼总控模块已封锁 · 舱内 ' + mv.length + ' 人已转移至其他舱段', 'sys'); } catch (e) { logError('w4', 'cockpitClear', e); }
 }
 function w4Drop(r, x) { const g = r.game; if (!g) return; const i = g.order.indexOf(x); if (i >= 0) g.order.splice(i, 1); }
 // 娱乐室 · 秘密投票：不计入外勤 / 舰船位置；全员自由检定，无需调度
@@ -1033,15 +1034,18 @@ api.post('/field/rooms/:id/act', auth, once, (req, res) => {
     else if (b.kind === 'stat') { const S = STAT_KEYS.find(x => x[1] === b.key); if (!S) return bad(res, '无效属性'); label = S[0]; val = +((info.stats || {})[b.key]) || 0; key = 'st:' + b.key; }
     else return bad(res, '无效行动');
     const W = w4Of(r), now = Date.now(), C = W.cd[me] = W.cd[me] || { any: 0, k: {} }, sec = t => Math.ceil((t - now) / 1000);
+    { const tg = target && target !== '自己' ? Object.keys(r.members).find(x => memberInfo(r, x).name === target) : ''; if (tg && tg !== me && !r.members[tg].bot && baseLoc(getUser(tg)) !== baseLoc(getUser(me))) return bad(res, '【' + target + '】不在你所在的舱室', 409); }
     if (now < C.any) return bad(res, '行动冷却中 · ' + sec(C.any) + ' 秒后可再次骰点', 409);
     if (now < (C.k[key] || 0)) return bad(res, '【' + label + '】冷却中 · ' + sec(C.k[key]) + ' 秒', 409);
     C.any = now + W4_CD_ANY; C.k[key] = now + (b.kind === 'skill' && b.cat === 'fix' ? W4_CD_FIX : W4_CD_SKILL);
     const roll = crypto.randomInt(1, 101), lv = rollLevel(roll, val), ok = /成功/.test(lv);
     const tK = target === '物理防御' ? 'p' : target === '特殊防御' ? 's' : '', tP = target === '自己' ? me : (target && Object.keys(r.members).find(x => memberInfo(r, x).name === target)) || '';
-    const W5 = w4Of(r), dockTry = !tP && W5.dock === 'broken' && baseLoc(getUser(me)) === 'airlock' && b.kind === 'skill' && b.cat === 'fix';
-    const PZ0 = w4Pz(r), loc0 = baseLoc(getUser(me)), nd0 = PZ0.nodes[loc0], gateFix = !dockTry && !tP && b.kind === 'skill' && b.cat === 'fix' && !!nd0 && nd0.k < W4PZ.PER && !PZ0.door, gateRes = b.kind === 'skill' && b.cat === 'res' && +b.idx === 0 && loc0 === W4PZ.HACK && W4PZ.total(PZ0) >= W4PZ.MAX && !PZ0.door, gateCi = b.kind === 'skill' && b.cat === 'res' && +b.idx === 2 && loc0 === W4PZ.CI_LAB && ((PZ0.ci || {}).g || 0) < 3;
-    if (gateFix && ok) PZ0.unl[me + ':' + loc0] = true; if (gateRes && ok) PZ0.hunl[me] = true; if (gateCi && ok) { PZ0.ci = PZ0.ci || { g: 0, ok: {}, lk: {} }; PZ0.ci.g = (PZ0.ci.g || 0) + 1; }
-    let fix = gateFix ? (ok ? '\n门禁线路检修口已打开 · 可以开始桥接' : '\n未能打开门禁线路检修口') : gateRes ? (ok ? '\n已接入门禁程序 · 可以开始骇入' : '\n未能接入门禁程序') : gateCi ? (ok ? '\n解析出一条密文语法：' + W4PZ.CI_RULES[PZ0.ci.g - 1][0] : '\n未能解析出新的语法') : dockTry ? (ok ? '\n对接模块紧急修复完成 · 双向气阀恢复工作' : '\n对接模块紧急修复失败 · 气阀仍未响应') : tP ? '' : w4Repair(r, me, lv, tK); if (dockTry && ok) W5.dock = 'ok';
+    const W5 = w4Of(r), dockTry = !tP && W5.dock === 'broken' && baseLoc(getUser(me)) === 'airlock' && b.kind === 'skill' && b.cat === 'fix' && +b.idx === 0;
+    const PZ0 = w4Pz(r), loc0 = baseLoc(getUser(me)), nd0 = PZ0.nodes[loc0], gateFix = !dockTry && !tP && b.kind === 'skill' && b.cat === 'fix' && +b.idx === 0 && !!nd0 && nd0.k < W4PZ.perOf(loc0) && !PZ0.door, gateRes = b.kind === 'skill' && b.cat === 'res' && +b.idx === 0 && loc0 === W4PZ.HACK && W4PZ.total(PZ0) >= W4PZ.MAX && !PZ0.door, gateCi = b.kind === 'skill' && b.cat === 'res' && +b.idx === 2 && loc0 === W4PZ.CI_LAB && !!(PZ0.ci || {}).mach && ((PZ0.ci || {}).g || 0) < 3, gateComm = !tP && b.kind === 'skill' && b.cat === 'fix' && +b.idx === 0 && loc0 === W4PZ.CI_LAB && !(PZ0.ci || {}).comm, gateMach = !tP && b.kind === 'skill' && b.cat === 'fix' && +b.idx === 1 && loc0 === W4PZ.CI_LAB && !!(PZ0.ci || {}).sig && !(PZ0.ci || {}).mach;
+    if (gateFix && ok) { PZ0.unl[me + ':' + loc0] = true; if (W4PZ.KIND[loc0] === 'fix') { nd0.k = W4PZ.perOf(loc0); nd0.by.push(memberInfo(r, me).name); if (W4PZ.total(PZ0) >= W4PZ.MAX) gameLog(r, w4T('powerOn'), 'gm', 'bc'); } } if (gateRes && ok) PZ0.hunl[me] = true; if ((gateComm || gateMach) && ok) { PZ0.ci = PZ0.ci || { g: 0, ok: {}, lk: {} }; if (gateComm) PZ0.ci.comm = true; else PZ0.ci.mach = true; }
+    if (gateCi && ok) { PZ0.ci = PZ0.ci || { g: 0, ok: {}, lk: {} }; PZ0.ci.g = (PZ0.ci.g || 0) + 1; }
+    let fix = gateFix ? (ok ? (W4PZ.KIND[loc0] === 'fix' ? '\n' + w4T('trussFixed') : '\n' + w4T('fixOpen')) : '\n' + w4T('fixFail')) : gateRes ? (ok ? '\n' + w4T('resOpen') : '\n' + w4T('resFail')) : gateComm ? '\n' + w4T(ok ? 'commOk' : 'commFail') : gateMach ? '\n' + w4T(ok ? 'machOk' : 'machFail') : gateCi ? (ok ? '\n' + w4T('ciRule', { 语法: W4PZ.CI_RULES[PZ0.ci.g - 1][0] }) : '\n' + w4T('ciFail')) : dockTry ? (ok ? '\n' + w4T('dockOk') : '\n' + w4T('dockFail')) : tP || !(b.kind === 'skill' && b.cat === 'fix' && +b.idx === 2) ? '' : w4Repair(r, me, lv, tK); if (dockTry && ok) W5.dock = 'ok';
+    if (tP && label === '神经调谐') { const g0 = r.game, tn = memberInfo(r, tP).name; if (!(g0.mad || {})[tP] && !(g0.pendMad || {})[tP]) fix = '\n【' + tn + '】并没有陷入疯狂'; else if (ok) { delete g0.mad[tP]; delete (g0.pendMad || {})[tP]; mSet(r, tP, 'sane', true); fix = '\n【' + tn + '】的神经被重新调谐 · 恢复了理智'; } else fix = '\n神经调谐没有起效'; }
     if (tP && ok && (label === '生理急救' || label === '医学治疗')) { const tn = memberInfo(r, tP).name, i0 = mGet(r, tP), mx = hpMaxOf(i0 && i0.stats);
       if (isDead(r, tP)) fix = '\n【' + tn + '】已死亡，无法救治';
       else if (label === '生理急救') { const n = lv === '大成功' ? crypto.randomInt(1, 4) : 1, got = w4Heal(r, tP, n); fix = '\n【' + tn + '】HP +' + got + ' → ' + hpNow(mGet(r, tP)) + '/' + mx; }
@@ -1067,10 +1071,10 @@ api.post('/field/rooms/:id/act', auth, once, (req, res) => {
 api.post('/field/rooms/:id/say', auth, once, (req, res) => {
   const r = fieldRoom(req.params.id), g = r && r.game, b = req.body || {}; if (!g) return bad(res, '游戏未开始', 409);
   const text = str(b.text, 300); if (!text) return bad(res, '内容为空');
-  const asGm = !!b.gm && isAdmin(req.user.id); if (!asGm && !r.members[req.user.id]) return bad(res, '你不在该舰上', 403); if (!asGm && ((g.mad || {})[req.user.id] || {}).no === 9) return bad(res, '你无法组织语言', 403); if (!asGm && ((g.mad || {})[req.user.id] || {}).no === 1) return bad(res, '你处于昏迷中，无法 RP', 403); if (!asGm && isDead(r, req.user.id)) return bad(res, '你已死亡', 403);
+  const asGm = !!b.gm && isAdmin(req.user.id); if (!asGm && !r.members[req.user.id]) return bad(res, '你不在该舰上', 403); if (!asGm && ((g.mad || {})[req.user.id] || {}).no === 9) return bad(res, '你无法组织语言', 403); if (!asGm && ((g.mad || {})[req.user.id] || {}).no === 1) return bad(res, '你处于昏迷中，无法 RP', 403); const foamU = !asGm && isDead(r, req.user.id) && !!r.w4 && !!(w4Of(r).foam || {})[req.user.id]; if (!asGm && isDead(r, req.user.id) && !foamU) return bad(res, '你已死亡', 403);
   const to = asGm && b.to && r.members[b.to] ? b.to : '';
   { const lk = (asGm ? 'gm:' : '') + req.user.id, now = Date.now(), ls = (g.lastSay = g.lastSay || {})[lk]; if (ls && ls.text === text && now - ls.t < 8000) return res.json({ room: fieldOut(req.params.id, isAdmin(req.user.id)) }); g.lastSay[lk] = { text, t: now }; }
-  if (asGm) { const as = GM_AS[b.as] ? b.as : 'narr'; gameLog(r, '【' + GM_AS[as] + '】：' + text, 'gm', as, to ? { to } : null); } else gameLog(r, '【' + memberInfo(r, req.user.id).name + '】：' + text, 'rp', !r.fun && !g.free && g.order[g.turn] !== req.user.id ? 'off' : '');
+  if (asGm) { const as = GM_AS[b.as] ? b.as : 'narr'; gameLog(r, '【' + GM_AS[as] + '】：' + text, 'gm', as, to ? { to } : null); } else gameLog(r, foamU ? text : '【' + memberInfo(r, req.user.id).name + '】：' + text, 'rp', foamU ? 'foam' : !r.fun && !g.free && g.order[g.turn] !== req.user.id ? 'off' : '');
   res.json({ room: fieldOut(req.params.id, isAdmin(req.user.id)) });
 });
 api.post('/field/rooms/:id/funstart', auth, once, (req, res) => {
@@ -1121,7 +1125,7 @@ api.post('/field/rooms/:id/cg', auth, admin, once, (req, res) => {
 });
 api.post('/field/rooms/:id/fx', auth, admin, once, (req, res) => {
   const r = fieldRoom(req.params.id), g = r && r.game, k = (req.body || {}).key; if (!g) return bad(res, '游戏未开始', 409);
-  const fx = g.fx = g.fx || {}; if (k === 'hit' || k === 'laugh') fx[k] = (fx[k] || 0) + 1; else if (['alarm', 'deep', 'home', 'shake'].includes(k)) fx[k] = !fx[k]; else return bad(res, '无效演出');
+  const fx = g.fx = g.fx || {}; if (k === 'bub') { fx.bub = (fx.bub || 0) + 1; fx.bubLoc = '*'; } else if (k === 'hit' || k === 'laugh') fx[k] = (fx[k] || 0) + 1; else if (['alarm', 'deep', 'home', 'shake'].includes(k)) fx[k] = !fx[k]; else return bad(res, '无效演出');
   res.json({ room: fieldOut(req.params.id, true) });
 });
 api.post('/field/rooms/:id/dice', auth, admin, once, (req, res) => {
@@ -1213,6 +1217,7 @@ const gmHandler = (req, res) => {
     if (b.value) { const was = !!g.mad[b.uid] || !!g.pendMad[b.uid] || !i.sane; mSet(r, b.uid, 'sane', true); delete g.mad[b.uid]; delete g.pendMad[b.uid]; if (was) gameLog(r, '【' + nm + '】恢复了理智', 'sys'); }
     else { mSet(r, b.uid, 'sane', false); if (!g.mad[b.uid]) g.pendMad[b.uid] = true; }
   } else if (b.op === 'er') mSet(r, b.uid, 'er', Math.max(0, Math.min(100, Math.round(+b.value || 0))));
+  else if (b.op === 'erFx' && ['er60', 'er80', 'er100'].includes(b.k)) { if (!r.w4) return bad(res, '仅 W4 主舰可用'); if (isDead(r, b.uid)) return bad(res, '该成员已死亡', 409); w4ErStage(r, b.uid, b.k); }
   else if (b.op === 'erode') {
     if (b.er != null) mSet(r, b.uid, 'er', Math.max(0, Math.min(100, Math.round(+b.er || 0))));
     if (b.mad && !g.mad[b.uid]) { const t = crypto.randomInt(1, 11), dur = crypto.randomInt(1, 11); mSet(r, b.uid, 'sane', false); delete g.pendMad[b.uid]; g.mad[b.uid] = { no: t, type: madPick(t), left: dur }; madInit(r, b.uid); gameLog(r, '【' + nm + '】陷入疯狂 · 1d10=' + t + '【' + g.mad[b.uid].type + '】（持续 ' + dur + ' 回合）', 'mad'); }
@@ -1308,7 +1313,7 @@ const shipOut = me => ({
 api.get('/ship', auth, (req, res) => res.json(shipOut(req.user.id)));
 const W4PZ = (() => {
   const R = n => Math.floor(Math.random() * n), rot = (m, k) => { k = ((k % 4) + 4) % 4; while (k--) m = ((m << 1) | (m >> 3)) & 15; return m; };
-  const NODES = [['airlock', '气密兼对接模块'], ['truss', '三级总控'], ['dock', '实验兼多功能对接模块']], HACK = 'truss', PER = 12, MAX = 36, HPER = 12, CODES = ['1C', '55', 'BD', 'E9', '7A', 'FF'];
+  const NODES = [['airlock', '气密兼对接模块'], ['truss', '三级总控'], ['dock', '实验兼多功能对接模块']], HACK = 'truss', PER = 24, MAX = 49, HPER = 12, PERS = { airlock: 24, dock: 24, truss: 1 }, KIND = { airlock: 'path', dock: 'circ', truss: 'fix' }, CODES = ['1C', '55', 'BD', 'E9', '7A', 'FF'];
   const DIRS = [[-1, 0, 1, 4], [0, 1, 2, 8], [1, 0, 4, 1], [0, -1, 8, 2]];
   function powered(c, rots) { const n = c.n, m = c.m.map((x, i) => rot(x, (rots && rots[i]) || 0)), st = c.sr * n, seen = new Set(); if (!(m[st] & 8)) return { seen, ok: false, m }; seen.add(st); const q = [st]; let ok = false;
     while (q.length) { const i = q.shift(), r = Math.floor(i / n), cc = i % n; if (r === c.er && cc === n - 1 && (m[i] & 2)) ok = true;
@@ -1331,22 +1336,55 @@ const W4PZ = (() => {
   function hexOk(h, path) { if (!Array.isArray(path) || !path.length || path.length > h.buf) return false; const n = h.n, used = new Set(); let pr = -1, pc = -1;
     for (let i = 0; i < path.length; i++) { const r = +(path[i] || [])[0], c = +(path[i] || [])[1]; if (!(r >= 0 && c >= 0 && r < n && c < n) || used.has(r * n + c)) return false; if (i === 0 ? r !== 0 : i % 2 ? c !== pc : r !== pr) return false; used.add(r * n + c); pr = r; pc = c; }
     return (' ' + path.map(([r, c]) => h.g[r * n + c]).join(' ') + ' ').includes(' ' + h.seq.join(' ') + ' '); }
+  const perOf = id => PERS[id] || PER;
+  function pathGen(n, rnd) { n = n || 5; rnd = rnd || Math.random; const R = k => Math.floor(rnd() * k); const adjc = (seen, r, c) => DIRS.map(([dr, dc]) => [r + dr, c + dc]).filter(([a, b]) => a >= 0 && b >= 0 && a < n && b < n && !seen.has(a * n + b));
+    for (let t = 0; t < 600; t++) { const seen = new Set(), p = []; let r = R(n), c = R(n); seen.add(r * n + c); p.push(r * n + c);
+      for (;;) { const o = adjc(seen, r, c); if (!o.length) break; o.sort(() => rnd() - 0.5); o.sort((x, y) => adjc(seen, x[0], x[1]).length - adjc(seen, y[0], y[1]).length); [r, c] = rnd() < 0.8 ? o[0] : o[R(o.length)]; seen.add(r * n + c); p.push(r * n + c); }
+      if (p.length >= 26 && (p.length <= n * n - 2 || t > 300)) return { n, s: p[0], open: p.slice().sort((a, b) => a - b) }; }
+    return null; }
+  function pathOk(pc, p) { if (!pc || !Array.isArray(p) || p.length !== pc.open.length) return false; const op = new Set(pc.open), seen = new Set(), n = pc.n;
+    for (let i = 0; i < p.length; i++) { const v = +p[i]; if (!op.has(v) || seen.has(v)) return false; if (i) { const u = +p[i - 1]; if (Math.abs(Math.floor(u / n) - Math.floor(v / n)) + Math.abs(u % n - v % n) !== 1) return false; } seen.add(v); }
+    return true; }
+  const seeded = str => { let h = 2166136261; for (const ch of String(str)) h = Math.imul(h ^ ch.charCodeAt(0), 16777619); return () => { h += 0x6D2B79F5; let z = h; z = Math.imul(z ^ (z >>> 15), z | 1); z ^= z + Math.imul(z ^ (z >>> 7), z | 61); return ((z ^ (z >>> 14)) >>> 0) / 4294967296; }; };
+  const gen = (id, seed) => KIND[id] === 'path' ? pathGen(6, seed != null ? seeded(seed) : null) : KIND[id] === 'circ' ? circGen(5) : null;
+  function hopGen(rnd) { rnd = rnd || Math.random; const Rr = k => Math.floor(rnd() * k), n = 5, buf = 7, len = 3;
+    for (let t = 0; t < 500; t++) { const g = Array.from({ length: n * n }, () => CODES[Rr(CODES.length)]), j = Array.from({ length: n * n }, () => 1 + Rr(2)), s = Rr(n * n), used = new Set([s]), p = []; let cur = s;
+      for (let i = 0; i < buf; i++) { const o = hopNext({ n, j }, cur).filter(x => !used.has(x)); if (!o.length) break; cur = o[Rr(o.length)]; used.add(cur); p.push(cur); }
+      if (p.length < buf) continue; const k0 = Rr(buf - len + 1); return { n, buf, g, j, s, seq: p.slice(k0, k0 + len).map(x => g[x]) }; }
+    return null; }
+  function hopNext(h, i) { const n = h.n, r = Math.floor(i / n), c = i % n, d = h.j[i]; return [[r - d, c], [r + d, c], [r, c - d], [r, c + d]].map(([a, b]) => ((a % n) + n) % n * n + ((b % n) + n) % n); }
+  function hopOk(h, path) { if (!h || !Array.isArray(path) || !path.length || path.length > h.buf) return false; const used = new Set([h.s]); let cur = h.s;
+    for (const v0 of path) { const v = +v0; if (!(v >= 0 && v < h.n * h.n) || used.has(v) || !hopNext(h, cur).includes(v)) return false; used.add(v); cur = v; }
+    return (' ' + path.map(v => h.g[+v]).join(' ') + ' ').includes(' ' + h.seq.join(' ') + ' '); }
+  const RG_OPS = { L: ['ROL / 左移', x => ((x << 1) | (x >> 7)) & 255], R: ['SHIFT / 右移', x => ((x >> 1) | ((x & 1) << 7)) & 255], N: ['NOT / 取反', x => x ^ 255], V: ['REV / 倒序', x => { let y = 0; for (let i = 0; i < 8; i++) if (x & (1 << i)) y |= 1 << (7 - i); return y; }], H: ['左半亮灭反', x => x ^ 240], T: ['右半亮灭反', x => x ^ 15] };
+  const rgApply = (h, id, x) => RG_OPS[id] ? RG_OPS[id][1](x) : x;
+  function regGen(rnd) { rnd = rnd || Math.random; const Rr = k => Math.floor(rnd() * k), base = Object.keys(RG_OPS);
+    for (let t = 0; t < 300; t++) { const h = { ops: ['N', 'R', 'V'] }, a = 1 + Rr(254), dist = new Map([[a, 0]]), q2 = [a];
+      while (q2.length) { const x = q2.shift(), d = dist.get(x); if (d >= 3) continue; h.ops.forEach(o => { const y = rgApply(h, o, x); if (!dist.has(y)) { dist.set(y, d + 1); q2.push(y); } }); }
+      const far = [...dist].filter(([, d]) => d >= 2 && d <= 3); if (!far.length) continue; const [tg, d] = far[Rr(far.length)]; return { a, t: tg, ops: h.ops, lim: d + 2 }; }
+    return { a: 15, t: 240, ops: ['N', 'L', 'V'], lim: 3 }; }
+  function regOk(h, ops) { if (!h || !Array.isArray(ops) || ops.length > h.lim) return false; let x = h.a; for (const o of ops) { if (!h.ops.includes(o)) return false; x = rgApply(h, o, x); } return x === h.t; }
+  const TXT0 = {"nodeDone":"【系统】：{舱段}线路已全部桥接","powerOn":"【系统】：舰桥门禁供电恢复 · 门禁程序需在三级总控接管","hackDone":"【系统】：门禁程序接管成功（{人}）· 舰桥舱门已解锁","hackFail":"【系统】：门禁入侵失败（{人}）· 终端锁定 60 秒","doorGm":"【系统】：舰桥舱门已解锁","ciSolved":"【密文解意】：「{译文}」（{人}）","fixOpen":"门禁线路检修口已打开 · 可以开始桥接","fixFail":"未能打开门禁线路检修口","trussFixed":"三级总控门禁线路已修复","resOpen":"已接入门禁程序 · 可以开始骇入","resFail":"未能接入门禁程序","ciRule":"解析出一条密文语法：{语法}","ciFail":"未能解析出新的语法","dockOk":"对接模块紧急修复完成 · 双向气阀恢复工作","dockFail":"对接模块紧急修复失败 · 气阀仍未响应","foam":"【{人}】的轮廓开始起泡、透明……化作了泡沫","bcd5":"警告：驾驶兼总控模块结构完整性急剧下降 · 所有人员立即撤离舰桥","bcd4":"警告：舰桥外壳出现贯穿裂纹 · 剧烈震动 · 撤离通道仍可使用","bcd3":"红色警报：大量不明生物正在撞击舰桥外壳","bcd2":"红色警报：舰桥即将失压 · 未穿戴宇航服人员远离气密兼对接模块","bcd1":"最终警告：舰桥结构将在 60 秒内崩解","uiFix":"使用机械维修进行桥接","uiTruss":"使用机械维修修复三级总控门禁线路","uiRes":"使用信息重构接管门禁程序","uiDoor":"舱门已解锁","ulTop":"OVERRIDE ACCEPTED // BRIDGE ACCESS","ulText":"舰桥舱门已解锁","commOk":"主实验模块通讯阵列已修复 · 主舰与先锋舰的通讯恢复清晰","commFail":"未能修复通讯阵列","machOk":"拟合仪缺失部件已补全 · 可以开始秘文解意","machFail":"未能制作出合适的部件","ciSig":"先锋舰已发送未判明信号加急样本，请前往主实验模块进行拟合。","uiComm":"主实验模块通讯阵列故障 · 使用机械修理修复","uiWait":"通讯已恢复 · 等待先锋舰来讯","uiMach":"拟合仪故障 · 使用零件制作补全缺失部件"}, TXT_LBL = {"nodeDone":"桥接 · 某舱段全部完成","powerOn":"桥接 · 三处全部完成","hackDone":"骇入 · 12 组完成","hackFail":"骇入 · 失败锁定","doorGm":"调度强制开门","ciSolved":"密文 · 破译一句","fixOpen":"骰点结果 · 检修口打开","fixFail":"骰点结果 · 检修口未打开","trussFixed":"骰点结果 · 三级总控修复","resOpen":"骰点结果 · 接入门禁程序","resFail":"骰点结果 · 未接入门禁程序","ciRule":"骰点结果 · 解锁密文语法","ciFail":"骰点结果 · 未解锁语法","dockOk":"骰点结果 · 对接模块修复","dockFail":"骰点结果 · 对接模块修复失败","foam":"ER 满 · 化作泡沫","bcd5":"舰桥倒计时广播 · 5 分钟","bcd4":"舰桥倒计时广播 · 4 分钟","bcd3":"舰桥倒计时广播 · 3 分钟","bcd2":"舰桥倒计时广播 · 2 分钟","bcd1":"舰桥倒计时广播 · 1 分钟","uiFix":"桥接页 · 机械维修提示","uiTruss":"桥接页 · 三级总控提示","uiRes":"桥接页 · 信息重构提示","uiDoor":"桥接页 · 舱门已解锁","ulTop":"解锁演出 · 第一行","ulText":"解锁演出 · 结尾字","commOk":"骰点结果 · 通讯阵列修复","commFail":"骰点结果 · 通讯修复失败","machOk":"骰点结果 · 拟合仪修复","machFail":"骰点结果 · 拟合仪修复失败","ciSig":"先锋舰来讯 · 弹窗正文","uiComm":"拟合页 · 通讯故障提示","uiWait":"拟合页 · 等待来讯","uiMach":"拟合页 · 仪器故障提示"};
+  const tx = (over, k, v) => String((over && over[k]) || TXT0[k] || '').replace(/\{([^{}]+)\}/g, (m, n) => v && v[n] != null ? v[n] : m);
+  const ERL0 = {"er60":["？？？：【{人}】突然感到世界开始摇晃。","？？？：【{人}】突然感到耳边传来尖锐的啸叫。","？？？：【{人}】眼前的舱壁像水面一样泛起了波纹。","？？？：【{人}】听见舱外有什么东西在叫自己的名字。"],"er80":["？？？：【{人}】的身影开始变得透明。","？？？：【{人}】的身形开始沸腾。","？？？：【{人}】的指尖渗出细小的气泡。"],"er100":["？？？：【{人}】在众人面前变成了泡沫。"]}, ERL_LBL = {"er60":"ER ≥ 60 · 意志坚定检定前","er80":"ER ≥ 80","er100":"ER = 100 · 化作泡沫"};
+  const erLine = (over, k, nm) => { const L = (over && Array.isArray(over[k]) && over[k].length) ? over[k] : ERL0[k] || ['']; return String(L[Math.floor(Math.random() * L.length)]).replace(/\{人\}/g, nm); };
+  const garble = (t, seed) => { const rnd = seeded('g' + seed), G = '░▒▓▚▞▙▟◌◍◎∷∵∴≋≈⌇⍿⎍⏃'; return Array.from(String(t)).map(ch => /\s/.test(ch) ? ch : G[Math.floor(rnd() * G.length)]).join(''); };
   const CI_ROOTS = [['S', '前进'], ['T', '我们'], ['U', '投信石'], ['V', '摇篮'], ['W', '进食'], ['X', '珊瑚'], ['Y', '存在'], ['Z', '他者'], ['α', '天空 · 冰壳']], CI_RULES = [['反相', '谱线倒置 · 方向相反'], ['断线', '谱线中断 · 破碎 / 无法'], ['空段', '句末空白段 · 疑问']], CI_LAB = 'lab';
   const CI_GLOSS = ['我们', '家', '我们的天空', '前进', '暗流', '人类', '天空断裂', '异常地涌动', '后退', '我', '深蓝色', '无法逃离', '母亲', '恐惧', '消失', '存在', '进食', '何处？', '灰白色', '彼此', '他者', '摇篮', '愿景', '生存'];
   const CI_SENTS = [{ segs: [[['T', 1], ['α', 1]], [['α', 1, 'd']]], ans: ['我们的天空', '天空断裂'], tr: '冰壳（他们的天空）在断裂' }, { segs: [[['U', 2], ['S', 1]], [['Z', 2], ['S', 1]]], ans: ['暗流', '异常地涌动'], tr: '暗流异常涌动' }, { segs: [[['T', 1]], [['S', 1, 'rd']]], ans: ['我们', '无法逃离'], tr: '我们无力逃离' },
     { segs: [[['T', 0.5]], [['Z', 1], ['W', 1]]], ans: ['我', '恐惧'], tr: '我害怕' }, { segs: [[['T', 1]], [['Y', 1]], []], ans: ['我们', '存在', '何处？'], tr: '族群在哪里' }, { segs: [[['T', 1]], [['T', 0.5], ['T', 0.5]], [['V', 1]]], ans: ['我们', '彼此', '摇篮'], tr: '让我们彼此依靠' }];
   const ciOk = (i, a) => { const s = CI_SENTS[i]; return !!s && Array.isArray(a) && a.length === s.ans.length && s.ans.every((x, k) => CI_GLOSS[+a[k]] === x); };
-  const fresh = v => ({ v: (v || 0) + 1, nodes: Object.fromEntries(NODES.map(([id]) => [id, { k: 0, c: circGen(5), by: [] }])), hack: hexGen(5, 6, 3), hackDone: '', hk: 0, ci: { g: 0, ok: {}, lk: {} }, lock: 0, door: false, breach: false, unl: {}, hunl: {}, reveal: false });
-  const fix = pz => { if (!pz) return fresh(0); NODES.forEach(([id]) => { const x = pz.nodes[id] = pz.nodes[id] || { k: 0, c: circGen(5), by: [] }; if (x.k == null) { x.k = x.done ? PER : 0; x.by = x.by || []; } }); pz.unl = pz.unl || {}; pz.hunl = pz.hunl || {}; pz.hk = pz.hk || 0; pz.ci = pz.ci || { g: 0, ok: {}, lk: {} }; return pz; };
-  const total = pz => NODES.reduce((a, [id]) => a + Math.min(PER, ((pz.nodes[id] || {}).k) || 0), 0);
-  function view(pz, loc, now, uid) { const tot = total(pz), nd = pz.nodes[loc], open = !!nd && nd.k < PER && !pz.door, unl = open && !!pz.unl[uid + ':' + loc], hkOpen = loc === HACK && tot >= MAX && !pz.door, hunl = hkOpen && !!pz.hunl[uid];
-    const o = { v: pz.v, nodes: NODES.map(([id, name]) => ({ id, name, k: Math.min(PER, pz.nodes[id].k || 0) })), tot, max: MAX, per: PER, hackDone: pz.hackDone, hk: Math.min(HPER, pz.hk || 0), hper: HPER, door: !!pz.door, breach: !!pz.breach, lock: Math.max(0, (pz.lock || 0) - now), here: loc, reveal: !!pz.reveal, lab: loc === CI_LAB, ci: (() => { const ci = pz.ci || { g: 0, ok: {}, lk: {} }, lk = {}; CI_SENTS.forEach((_, i) => { const t0 = ((ci.lk || {})[uid + ':' + i] || 0) - now; if (t0 > 0) lk[i] = t0; }); return { g: ci.g || 0, ok: ci.ok || {}, lk }; })(),
-      bridge: !!nd || loc === HACK, nodeOpen: open, nodeK: nd ? Math.min(PER, nd.k) : 0, nodeDone: !!nd && nd.k >= PER && !pz.door, needFix: open && !unl, needRes: hkOpen && !hunl, hackWait: loc === HACK && tot < MAX && !pz.door && !open };
-    if (unl) o.circ = { id: loc, k: nd.k, n: nd.c.n, sr: nd.c.sr, er: nd.c.er, m: nd.c.m };
-    if (hunl) o.hack = { n: pz.hack.n, buf: pz.hack.buf, g: pz.hack.g, seq: pz.hack.seq };
+  const fresh = v => ({ v: (v || 0) + 1, nodes: Object.fromEntries(NODES.map(([id]) => [id, { k: 0, c: gen(id), by: [] }])), hack: regGen(), hackDone: '', hk: 0, ci: { g: 0, ok: {}, lk: {} }, lock: 0, door: false, breach: false, unl: {}, hunl: {}, reveal: false });
+  const fix = pz => { if (!pz) return fresh(0); NODES.forEach(([id]) => { const x = pz.nodes[id] = pz.nodes[id] || { k: 0, c: gen(id), by: [] }; if (x.k == null) { x.k = x.done ? perOf(id) : 0; x.by = x.by || []; } if (KIND[id] === 'path' ? !(x.c && x.c.open && x.c.n === 6) : KIND[id] === 'circ' ? !(x.c && x.c.m) : false) x.c = gen(id, (pz.v || 0) + ':' + id + ':' + x.k); }); pz.unl = pz.unl || {}; pz.hunl = pz.hunl || {}; pz.hk = pz.hk || 0; if (!pz.hack || !pz.hack.ops || pz.hack.keys || pz.hack.ops.join('') !== 'NRV') pz.hack = regGen(seeded('h:' + (pz.v || 0) + ':' + pz.hk)); pz.ci = pz.ci || { g: 0, ok: {}, lk: {} }; return pz; };
+  const total = pz => NODES.reduce((a, [id]) => a + Math.min(perOf(id), ((pz.nodes[id] || {}).k) || 0), 0);
+  function view(pz, loc, now, uid) { const tot = total(pz), nd = pz.nodes[loc], open = !!nd && nd.k < perOf(loc) && !pz.door, unl = open && !!pz.unl[uid + ':' + loc], hkOpen = loc === HACK && tot >= MAX && !pz.door, hunl = hkOpen && !!pz.hunl[uid];
+    const o = { v: pz.v, nodes: NODES.map(([id, name]) => ({ id, name, k: Math.min(perOf(id), pz.nodes[id].k || 0), per: perOf(id), kind: KIND[id] })), tot, max: MAX, per: perOf(loc), kind: KIND[loc] || '', hackDone: pz.hackDone, hk: Math.min(HPER, pz.hk || 0), hper: HPER, door: !!pz.door, breach: !!pz.breach, lock: Math.max(0, (pz.lock || 0) - now), here: loc, reveal: !!pz.reveal, lab: loc === CI_LAB, ci: (() => { const ci = pz.ci || { g: 0, ok: {}, lk: {} }, lk = {}; CI_SENTS.forEach((_, i) => { const t0 = ((ci.lk || {})[uid + ':' + i] || 0) - now; if (t0 > 0) lk[i] = t0; }); return { g: ci.g || 0, ok: ci.ok || {}, lk, comm: !!ci.comm, sig: !!ci.sig, mach: !!ci.mach }; })(),
+      bridge: !!nd || loc === HACK, nodeOpen: open, nodeK: nd ? Math.min(perOf(loc), nd.k) : 0, nodeDone: !!nd && nd.k >= perOf(loc) && !pz.door, needFix: open && !unl, needRes: hkOpen && !hunl, hackWait: loc === HACK && tot < MAX && !pz.door && !open };
+    if (unl && KIND[loc] === 'path' && nd.c) o.path = { id: loc, k: nd.k, n: nd.c.n, s: nd.c.s, open: nd.c.open }; if (unl && KIND[loc] === 'circ') o.circ = { id: loc, k: nd.k, n: nd.c.n, sr: nd.c.sr, er: nd.c.er, m: nd.c.m };
+    if (hunl) o.hack = { a: pz.hack.a, t: pz.hack.t, ops: pz.hack.ops, lim: pz.hack.lim };
     return o; }
   function noisy(t, p) { p = Math.max(0, Math.min(100, +p || 0)) / 100; if (!p) return t; const G = '█▓▒░#%&*@~'; let o = ''; for (const ch of String(t)) { const x = Math.random(); o += x < p * 0.4 ? G[R(G.length)] : x < p * 0.6 ? '' : x < p * 0.68 ? '…' : ch; } return o.replace(/…+/g, '…'); }
-  return { rot, powered, circOk, circGen, hexGen, hexOk, fresh, fix, total, view, noisy, NODES, HACK, PER, MAX, HPER, CI_ROOTS, CI_RULES, CI_GLOSS, CI_SENTS, CI_LAB, ciOk };
+  return { rot, powered, circOk, circGen, hexGen, hexOk, fresh, fix, total, view, noisy, NODES, HACK, PER, MAX, HPER, garble, ERL0, ERL_LBL, erLine, TXT0, TXT_LBL, tx, hopGen, hopNext, hopOk, RG_OPS, rgApply, regGen, regOk, PERS, KIND, perOf, gen, pathGen, pathOk, CI_ROOTS, CI_RULES, CI_GLOSS, CI_SENTS, CI_LAB, ciOk };
 })();
 // ===== WEEK4 主舰：自由行动 + 模块防御衰减 / 维修 / 撕卡通知 =====
 const W4_MODS = ['airlock', 'rcs', 'lab', 'dock', 'farm', 'med', 'hab1', 'hab2', 'truss'];
@@ -1354,29 +1392,43 @@ const W4_NAME = { cockpit: '驾驶兼总控模块', airlock: '气密兼对接模
 const W4_ER_GAP = 10 * 60e3, W4_CD_SKILL = 3 * 60e3, W4_CD_FIX = 100e3, W4_HEAL_GAP = 10 * 60e3, W4_CD_ANY = 100e3, W4_RATE = { low: 60e3, mid: 40e3, high: 20e3 }, W4_SUIT_N = 10, W4_BCD = 5 * 60e3;
 const W4_BCD_LINES = { 5: '警告：驾驶兼总控模块结构完整性急剧下降 · 所有人员立即撤离舰桥', 4: '警告：舰桥外壳出现贯穿裂纹 · 剧烈震动 · 撤离通道仍可使用', 3: '红色警报：大量不明生物正在撞击舰桥外壳', 2: '红色警报：舰桥即将失压 · 未穿戴宇航服人员远离气密兼对接模块', 1: '最终警告：舰桥结构将在 60 秒内崩解' };
 const w4Pz = r => { const W = w4Of(r); return W.pz = W4PZ.fix(W.pz); };
-const W4_PRE0 = ["驾驶兼总控模块已锁定 · 机械维修人员请检修门禁线路","门禁供电已恢复 · 请前往三级总控接管门禁程序","异常能量读数急剧上升 · 全体船员保持警戒","舰桥已锁定 · 导航系统拒绝一切外部指令","即将机动规避鱼群 · 请抓紧固定物","舱体多处受损 · 维修人员请前往各模块","跃迁准备程序已启动 · 请远离推进模块","所有先锋舰请速回主舰 · 重复，请速回主舰","舰桥舱门已开启 · 导航系统仍处于锁定状态"];
+const W4_PRE0 = ["驾驶兼总控模块已锁定 · 机械维修人员请检修门禁线路","门禁供电已恢复 · 请前往三级总控接管门禁程序","异常能量读数急剧上升 · 全体船员保持警戒","舰桥已锁定 · 导航系统拒绝一切外部指令","即将机动规避无法判明的行动源 · 请抓紧固定物","舱体多处受损 · 维修人员请前往各模块","跃迁准备程序已启动 · 请远离推进模块","所有先锋舰请速回主舰 · 重复，请速回主舰","舰桥舱门已开启 · 导航系统仍处于锁定状态"];
 let W4_PRE = (() => { try { const x = db.prepare("select v from kv where k = 'w4_presets'").get(); const a = x && JSON.parse(x.v); return Array.isArray(a) ? a : W4_PRE0.slice(); } catch (e) { return W4_PRE0.slice(); } })();
-function w4Bc(r, text, opt) { opt = opt || {}; const W = w4Of(r), noise = opt.noise != null ? +opt.noise : (W.noise != null ? W.noise : 40), sc = opt.scope || 'all';
+let W4_TXT = (() => { try { const x = db.prepare("select v from kv where k = 'w4_txt'").get(); const o = x && JSON.parse(x.v); return o && typeof o === 'object' ? o : {}; } catch (e) { return {}; } })();
+const w4T = (k, v) => W4PZ.tx(W4_TXT, k, v);
+let W4_ERL = (() => { try { const x = db.prepare("select v from kv where k = 'w4_erl'").get(); const o = x && JSON.parse(x.v); return o && typeof o === 'object' ? o : {}; } catch (e) { return {}; } })();
+function w4Bc(r, text, opt) { opt = opt || {}; const W = w4Of(r), noise = ((w4Pz(r).ci || {}).comm) ? 0 : opt.noise != null ? +opt.noise : (W.noise != null ? W.noise : 40), sc = opt.scope || 'all';
   if (sc !== 'van') gameLog(r, '【广播】：' + text, 'gm', 'bc'); if (sc === 'main') return;
   Object.keys(FIELD).forEach(k => { const o = FIELD[k]; if (o === r || o.fun || o.main || o.w4 || !o.started || !o.game) return; gameLog(o, '【主舰广播 · 信号' + (noise >= 60 ? '极差' : noise >= 25 ? '不稳' : '良好') + '】：' + W4PZ.noisy(text, noise), 'gm', 'bc'); }); }
-const w4Of = r => { const g = r.game; return g.w4 = g.w4 || { on: { p: false, s: false }, rate: 'mid', t0: 0, boom: 0, next: {}, focus: {}, zero: {}, alerts: [], aSeq: 0, ack: {}, cd: {}, suit: {}, suits: W4_SUIT_N, foam: {} }; };
+const w4Of = r => { const g = r.game; return g.w4 = g.w4 || { on: { p: false, s: false }, rate: 'mid', t0: 0, boom: 0, next: {}, focus: {}, zero: {}, alerts: [], aSeq: 0, ack: {}, cd: {}, suit: {}, suits: W4_SUIT_N, suitsT: 5, foam: {} }; };
 const w4Occ = (r, mod) => Object.keys(r.members).filter(x => !r.members[x].bot && !isDead(r, x) && baseLoc(getUser(x)) === mod);
 const w4Out = r => { const W = w4Of(r), me = CUR_VIEWER, now = Date.now(), C = W.cd[me] || { any: 0, k: {} };
-  return { on: W.on, rate: W.rate, started: !!W.t0, el: W.t0 ? now - W.t0 : 0, bcd: W.bcd ? Math.max(0, W.bcd - now) : 0, dock: W.dock || '', vdock: W.vdock || {}, noise: W.noise != null ? W.noise : 40, erGap: W.erGap || 10, pz: W4PZ.view(w4Pz(r), me ? baseLoc(getUser(me)) : '', now, me), cgs: me && isAdmin(me) ? (W.cgs || []) : [], presets: me && isAdmin(me) ? W4_PRE : [], boom: W.boom || 0, suits: W.suits, suit: !!W.suit[me], cdAny: Math.max(0, C.any - now), cdK: Object.fromEntries(Object.entries(C.k).filter(([, t]) => t > now).map(([k, t]) => [k, t - now])), alerts: me && isAdmin(me) ? W.alerts : [], foam: W.foam }; };
+  return { on: W.on, rate: W.rate, started: !!W.t0, el: W.t0 ? now - W.t0 : 0, bcd: W.bcd ? Math.max(0, W.bcd - now) : 0, dock: W.dock || '', vdock: W.vdock || {}, noise: W.noise != null ? W.noise : 40, erGap: W.erGap || 10, pz: W4PZ.view(w4Pz(r), me ? baseLoc(getUser(me)) : '', now, me), cgs: me && isAdmin(me) ? (W.cgs || []) : [], presets: me && isAdmin(me) ? W4_PRE : [], txt: W4_TXT, erl: me && isAdmin(me) ? W4_ERL : {}, boom: W.boom || 0, suits: W.suits, suitsT: W.suitsT == null ? 5 : W.suitsT, suit: !!W.suit[me], cdAny: Math.max(0, C.any - now), cdK: Object.fromEntries(Object.entries(C.k).filter(([, t]) => t > now).map(([k, t]) => [k, t - now])), alerts: me && isAdmin(me) ? W.alerts : [], foam: W.foam, seeFoam: !!me && (isAdmin(me) || !!W.foam[me] || (+((mGet(r, me) || {}).er) || 0) >= 60) }; };
 function w4Alert(r, kind, target, text) { const W = w4Of(r), k = kind + ':' + target; if (W.ack[k] || W.alerts.some(a => a.k === k)) return; W.alerts.push({ id: ++W.aSeq, k, kind, target, text, t: Date.now() }); gameLog(r, '〔调度提醒〕' + text, 'sys', '', { hide: true }); }
 function w4Scan(r) {
   const W = w4Of(r), sh = shipGet(), br = sh.broken || [], live = {};
   [...W4_MODS, 'cockpit'].forEach(m => { const k = 'mod:' + m; if (defOf(sh, m).p <= 0 && !br.includes(m) && !sh.lost.includes(m)) { live[k] = 1; w4Alert(r, 'mod', m, W4_NAME[m] + '物理防御归零 · 是否判定模块损坏？'); } });
   Object.keys(r.members).forEach(x => { if (r.members[x].bot || isDead(r, x)) return; const i = mGet(r, x); if (!i) return; const nm = memberInfo(r, x).name;
     if (hpNow(i) <= 0) { live['hp:' + x] = 1; w4Alert(r, 'hp', x, '【' + nm + '】HP 归零 · 体质检定 / 判定死亡'); }
-    if ((+i.er || 0) >= 100) { live['er:' + x] = 1; w4Alert(r, 'er', x, '【' + nm + '】ER 已满 · 是否消散为泡沫？'); } });
+    { const er = +i.er || 0, ES = W.erSt = W.erSt || {}, s0 = ES[x] || 0, g = r.game; let ch = false;
+      if (er < 60) { if (s0) { ES[x] = 0; ch = true; } }
+      else { if (s0 < 1) { ES[x] = 1; ch = true; gameLog(r, W4PZ.erLine(W4_ERL, 'er60', nm), 'mad'); const v = +(((memberInfo(r, x).stats) || {}).pow) || 0, roll = crypto.randomInt(1, 101), lv = rollLevel(roll, v); gameLog(r, '【' + nm + '】进行【意志坚定】检定\nD100=' + roll + '/' + v + ' ' + lv, 'roll', lv);
+          if (!/成功/.test(lv) && !(g.mad || {})[x]) { const t = crypto.randomInt(1, 11), dur = crypto.randomInt(1, 11); mSet(r, x, 'sane', false); g.mad = g.mad || {}; delete (g.pendMad || {})[x]; g.mad[x] = { no: t, type: madPick(t), left: dur }; madInit(r, x); gameLog(r, '【' + nm + '】陷入疯狂 · 1d10=' + t + '【' + g.mad[x].type + '】', 'mad'); } }
+        if (er >= 80 && (ES[x] || 0) < 2) { ES[x] = 2; ch = true; gameLog(r, W4PZ.erLine(W4_ERL, 'er80', nm), 'mad'); }
+        if (er >= 100) { w4Kill(r, x, true, '', W4PZ.erLine(W4_ERL, 'er100', nm)); ch = true; } }
+      if (ch) mainSave(r); } });
   Object.keys(W.ack).forEach(k => { if (!live[k] && !k.startsWith('boom:')) delete W.ack[k]; });
   W.alerts = W.alerts.filter(a => a.kind === 'boom' ? !isDead(r, a.target) : live[a.k]);
 }
-function w4Kill(r, x, foam, why) { const g = r.game; g.dead = g.dead || {}; if (g.dead[x]) return; g.dead[x] = true; delete (g.mad || {})[x]; delete (g.pendMad || {})[x]; const nm = memberInfo(r, x).name; if (foam) w4Of(r).foam[x] = true; gameLog(r, foam ? '【' + nm + '】的轮廓开始起泡、透明……化作了泡沫' : '【' + nm + '】死亡' + (why ? '（' + why + '）' : ''), 'dead'); if (r.members[x] && !r.members[x].bot) db.prepare('update users set dead = 1 where id = ?').run(x); }
+function w4ErStage(r, x, k) { const g = r.game, nm = memberInfo(r, x).name;
+  if (k === 'er60') { gameLog(r, W4PZ.erLine(W4_ERL, 'er60', nm), 'mad'); const v = +(((memberInfo(r, x).stats) || {}).pow) || 0, roll = crypto.randomInt(1, 101), lv = rollLevel(roll, v); gameLog(r, '【' + nm + '】进行【意志坚定】检定\nD100=' + roll + '/' + v + ' ' + lv, 'roll', lv);
+    if (!/成功/.test(lv) && !(g.mad || {})[x]) { const t = crypto.randomInt(1, 11), dur = crypto.randomInt(1, 11); mSet(r, x, 'sane', false); g.mad = g.mad || {}; delete (g.pendMad || {})[x]; g.mad[x] = { no: t, type: madPick(t), left: dur }; madInit(r, x); gameLog(r, '【' + nm + '】陷入疯狂 · 1d10=' + t + '【' + g.mad[x].type + '】', 'mad'); } }
+  else if (k === 'er80') gameLog(r, W4PZ.erLine(W4_ERL, 'er80', nm), 'mad');
+  else if (k === 'er100') w4Kill(r, x, true, '', W4PZ.erLine(W4_ERL, 'er100', nm)); }
+function w4Kill(r, x, foam, why, txt) { const g = r.game; g.dead = g.dead || {}; if (g.dead[x]) return; g.dead[x] = true; delete (g.mad || {})[x]; delete (g.pendMad || {})[x]; const nm = memberInfo(r, x).name; if (foam) { w4Of(r).foam[x] = true; const fx = g.fx = g.fx || {}; fx.bub = (fx.bub || 0) + 1; fx.bubLoc = r.members[x] && r.members[x].bot ? '' : baseLoc(getUser(x)); } gameLog(r, txt || foam ? txt || w4T('foam', { 人: nm }) : '【' + nm + '】死亡' + (why ? '（' + why + '）' : ''), 'dead'); if (r.members[x] && !r.members[x].bot) db.prepare('update users set dead = 1 where id = ?').run(x); }
 function w4Break(r, mod) { const sh = shipGet(); sh.broken = [...new Set([...(sh.broken || []), mod])]; shipSet(sh); gameLog(r, '【广播】：' + W4_NAME[mod] + '结构损毁！相邻舱段已封锁，需穿戴宇航服通行', 'gm', 'bc');
   db.prepare('select id, loc from users where dead = 0 or dead is null').all().forEach(u => { if (!sortieOf(u.id) && baseLoc(u) === mod) { if (r.members[u.id]) w4Kill(r, u.id, false, '模块损毁'); else db.prepare('update users set dead = 1 where id = ?').run(u.id); } }); }
-function w4Boom(r) { const W = w4Of(r); if (W.boom) return; W.boom = Date.now(); const sh = shipGet(); sh.broken = [...new Set([...(sh.broken || []), 'cockpit'])]; sh.boom = W.boom; sh.def = sh.def || {}; sh.def.airlock = { ...(sh.def.airlock || {}), p: Math.min(defOf(sh, 'airlock').p, 6) }; shipSet(sh); W.dock = 'broken'; W.bcd = 0;
+function w4Boom(r) { const W = w4Of(r); if (W.boom) return; W.boom = Date.now(); W.suits = 0; const sh = shipGet(); sh.broken = [...new Set([...(sh.broken || []), 'cockpit'])]; sh.boom = W.boom; sh.def = sh.def || {}; sh.def.airlock = { ...(sh.def.airlock || {}), p: Math.min(defOf(sh, 'airlock').p, 6) }; shipSet(sh); W.dock = 'broken'; W.bcd = 0;
   Object.keys(FIELD).forEach(k => { const o = FIELD[k]; if (o.fun || !o.started || !o.game) return; const fx = o.game.fx = o.game.fx || {}; fx.boom = (fx.boom || 0) + 1; gameLog(o, o.main || o.w4 ? '【广播】：警告——驾驶兼总控模块发生爆炸！' : '【广播】：主舰方向传来强烈闪光——MSV-05 驾驶模块发生爆炸！', 'gm', 'bc'); });
   w4Occ(r, 'cockpit').forEach(x => w4Alert(r, 'boom', x, '【' + memberInfo(r, x).name + '】身处爆炸的驾驶模块 · 是否判定死亡？'));
   w4Occ(r, 'airlock').filter(x => !W.suit[x]).forEach(x => w4Alert(r, 'boom', x, '【' + memberInfo(r, x).name + '】在相邻的气密兼对接模块且未穿宇航服 · 是否判定死亡？'));
@@ -1392,17 +1444,17 @@ function w4Repair(r, me, lv, kf) {
 }
 function w4Tick() {
   const r = FIELD[W4_ID]; if (!r || !r.game) return; const W = w4Of(r), now = Date.now(); let sh = null, dirty = false, save = false;
-  if (W.bcd && !W.boom) { const left = W.bcd - now, step = Math.ceil(left / 60e3); if (left <= 0) { W.bcd = 0; w4Boom(r); } else if (step !== W.bcdStep) { W.bcdStep = step; save = true; if (W4_BCD_LINES[step]) w4Bc(r, W4_BCD_LINES[step], { scope: 'main' }); const fx = r.game.fx = r.game.fx || {}; fx.hit = (fx.hit || 0) + 1; } }
+  if (W.bcd && !W.boom) { const left = W.bcd - now, step = Math.ceil(left / 60e3); if (left <= 0) { W.bcd = 0; w4Boom(r); } else if (step !== W.bcdStep) { W.bcdStep = step; save = true; if (W4_BCD_LINES[step]) w4Bc(r, w4T('bcd' + step), { scope: 'main' }); const fx = r.game.fx = r.game.fx || {}; fx.hit = (fx.hit || 0) + 1; } }
   ['p', 's'].forEach(k => { if (!W.on[k]) return; if (!W.next[k]) W.next[k] = now + W4_RATE[W.rate]; if (now < W.next[k]) return; W.next[k] = now + (W4_RATE[W.rate] || W4_RATE.mid);
     sh = sh || shipGet(); const live = W4_MODS.filter(m => !sh.lost.includes(m) && !(sh.broken || []).includes(m) && defOf(sh, m)[k] > 0); if (!live.length) return;
     let f = W.focus[k]; if (!live.includes(f) || crypto.randomInt(0, 4) === 0) f = W.focus[k] = live[crypto.randomInt(0, live.length)];
     const was = defOf(sh, f)[k], nv = Math.max(0, was - crypto.randomInt(1, 4)); sh.def[f] = { ...(sh.def[f] || {}), [k]: nv }; dirty = save = true;
     if (live.length > 1 && crypto.randomInt(0, 2)) { const oth = live.filter(m => m !== f), o = oth[crypto.randomInt(0, oth.length)]; sh.def[o] = { ...(sh.def[o] || {}), [k]: Math.max(0, defOf(sh, o)[k] - 1) }; }
     const lb = W4_NAME[f] + (k === 'p' ? '物理防御' : '特殊防御');
-    if (nv === 0) gameLog(r, '【广播】：' + lb + '已耗尽' + (k === 's' ? '，舱内侵蚀开始' : ''), 'gm', 'bc'); else if (nv <= 10 && was > 10) gameLog(r, '【广播】：' + lb + '告急（' + nv + '/30）', 'gm', 'bc'); });
+    if (nv === 0) gameLog(r, '【广播】：' + lb + '已耗尽', 'gm', 'bc'); else if (nv <= 10 && was > 10) gameLog(r, '【广播】：' + lb + '告急（' + nv + '/30）', 'gm', 'bc'); });
   sh = sh || shipGet();
   [...W4_MODS, 'cockpit'].forEach(m => { if (defOf(sh, m).s > 0 || (sh.broken || []).includes(m)) { delete W.zero[m]; return; } if (!W.zero[m]) { W.zero[m] = now; save = true; return; } if (now - W.zero[m] < (W.erGap || 10) * 60e3) return; W.zero[m] = now; save = true;
-    w4Occ(r, m).forEach(x => { const i = mGet(r, x); if (!i) return; const nv = Math.min(100, (+i.er || 0) + 3); mSet(r, x, 'er', nv); gameLog(r, '舱壁上的阴影在蠕动……你感到一阵眩晕。', 'mad', '', { to: x }); gameLog(r, '〔侵蚀〕【' + memberInfo(r, x).name + '】ER +3 → ' + nv + '（' + W4_NAME[m] + '特殊防御失效）', 'sys', '', { hide: true }); }); });
+    w4Occ(r, m).forEach(x => { const i = mGet(r, x); if (!i) return; const nv = Math.min(100, (+i.er || 0) + 3); mSet(r, x, 'er', nv); }); });
   if (dirty) shipSet(sh);
   Object.keys(W.treat || {}).forEach(x => { const T = W.treat[x], nm = r.members[x] ? memberInfo(r, x).name : x; if (!r.members[x] || isDead(r, x)) { delete W.treat[x]; save = true; return; }
     if (w4LocOf(r, x) !== T.loc) { delete W.treat[x]; save = true; gameLog(r, '【' + nm + '】离开了治疗所在的舱室，医学治疗中断', 'sys'); return; }
@@ -1419,7 +1471,7 @@ function w4Take(r, x, item) { const g = r.game, m = r.members[x]; if (!m) return
 api.post('/field/rooms/:id/suit', auth, once, (req, res) => {
   const r = fieldRoom(req.params.id), me = req.user.id, op = String((req.body || {}).op || 'take'); if (!r || !r.w4 || !r.game) return bad(res, '无效舰船', 404); if (!r.members[me]) return bad(res, '你不在该舰上', 403); if (isDead(r, me)) return bad(res, '你已死亡', 403);
   const W = w4Of(r), g = r.game, nm = memberInfo(r, me).name; g.loot = g.loot || {}; const L = g.loot[me] = g.loot[me] || [];
-  if (op === 'take') { const loc = baseLoc(getUser(me)); if (loc !== 'airlock' && loc !== 'med') return bad(res, '只有气密兼对接模块和生活兼医疗模块存放宇航服', 409); if (L.length >= lootCap(me)) return bad(res, '外勤背包已满', 409); if (loc === 'airlock') { if (W.suits <= 0) return bad(res, '气密兼对接模块的宇航服已领完', 409); W.suits--; } L.push(SUIT); gameLog(r, '【' + nm + '】在' + W4_NAME[loc] + '领取了宇航服' + (loc === 'airlock' ? '（剩余 ' + W.suits + ' 套）' : ''), 'item'); }
+  if (op === 'take') { const loc = baseLoc(getUser(me)); if (loc !== 'airlock' && loc !== 'truss' && !['hab1', 'hab2'].includes(loc)) return bad(res, '只有气密兼对接模块、三级总控和乘员居住模块存放宇航服', 409); if (W.suitsT == null) W.suitsT = 5; if (L.length >= lootCap(me)) return bad(res, '外勤背包已满', 409); if (loc === 'airlock') { if (W.suits <= 0) return bad(res, '气密兼对接模块的宇航服已领完', 409); W.suits--; } if (loc === 'truss') { if (W.suitsT <= 0) return bad(res, '三级总控的宇航服已领完', 409); W.suitsT--; } L.push(SUIT); gameLog(r, '【' + nm + '】在' + W4_NAME[loc] + '领取了宇航服' + (loc === 'airlock' ? '（剩余 ' + W.suits + ' 套）' : loc === 'truss' ? '（剩余 ' + W.suitsT + ' 套）' : ''), 'item'); }
   else if (op === 'wear') { if (W.suit[me]) return bad(res, '你已穿着宇航服', 409); if (!w4Take(r, me, SUIT)) return bad(res, '背包里没有宇航服', 409); W.suit[me] = true; gameLog(r, '【' + nm + '】穿上了宇航服', 'item'); }
   else if (op === 'off') { if (!W.suit[me]) return bad(res, '你没有穿宇航服', 409); if (L.length >= lootCap(me)) return bad(res, '外勤背包已满，无法脱下', 409); W.suit[me] = false; L.push(SUIT); gameLog(r, '【' + nm + '】脱下了宇航服', 'item'); }
   else return bad(res, '无效操作');
@@ -1428,19 +1480,19 @@ api.post('/field/rooms/:id/suit', auth, once, (req, res) => {
 api.post('/field/rooms/:id/pz', auth, once, (req, res) => {
   const r = fieldRoom(req.params.id), me = req.user.id, b = req.body || {}; if (!r || !r.w4 || !r.game) return bad(res, '无效舰船', 404); if (!r.members[me]) return bad(res, '你不在该舰上', 403); if (isDead(r, me)) return bad(res, '你已死亡', 403);
   const W = w4Of(r), pz = w4Pz(r), loc = baseLoc(getUser(me)), nm = memberInfo(r, me).name, now = Date.now();
-  if (b.op === 'ciph') { if (loc !== W4PZ.CI_LAB) return bad(res, '密文终端在主实验模块', 409); const ci = pz.ci = pz.ci || { g: 0, ok: {}, lk: {} }, ci_i = +b.i, ci_k = me + ':' + ci_i; if (!W4PZ.CI_SENTS[ci_i]) return bad(res, '无效密文', 409); if (ci.ok[ci_i]) return bad(res, '这段密文已被破译', 409); if (now < (ci.lk[ci_k] || 0)) return bad(res, '解析冷却中', 409);
-    let cfail = false; if (W4PZ.ciOk(ci_i, b.a)) { ci.ok[ci_i] = nm; gameLog(r, '【密文解意】：「' + W4PZ.CI_SENTS[ci_i].tr + '」（' + nm + '）', 'gm', 'bc'); } else { cfail = true; ci.lk[ci_k] = now + 30e3; }
+  if (b.op === 'ciph') { if (loc !== W4PZ.CI_LAB) return bad(res, '密文终端在主实验模块', 409); const ci = pz.ci = pz.ci || { g: 0, ok: {}, lk: {} }, ci_i = +b.i, ci_k = me + ':' + ci_i; if (!W4PZ.CI_SENTS[ci_i]) return bad(res, '无效密文', 409); if (!ci.mach) return bad(res, '拟合仪尚未修复', 409); if (ci.ok[ci_i]) return bad(res, '这段密文已被破译', 409); if (now < (ci.lk[ci_k] || 0)) return bad(res, '解析冷却中', 409);
+    let cfail = false; if (W4PZ.ciOk(ci_i, b.a)) { ci.ok[ci_i] = nm; gameLog(r, w4T('ciSolved', { 译文: W4PZ.CI_SENTS[ci_i].tr, 人: nm }), 'gm', 'bc'); } else { cfail = true; ci.lk[ci_k] = now + 30e3; }
     mainSave(r); return res.json({ room: fieldOut(req.params.id), fail: cfail }); }
   if (pz.door) return bad(res, '舰桥舱门已经打开', 409); let fail = false;
-  if (b.op === 'circ') { const nd = pz.nodes[loc]; if (!nd) return bad(res, '此舱段没有门禁线路'); if (nd.k >= W4PZ.PER) return bad(res, '本舱段线路已全部桥接', 409); if (!pz.unl[me + ':' + loc]) return bad(res, '请先使用机械维修打开检修口', 409);
+  if (b.op === 'circ') { const nd = pz.nodes[loc]; if (!nd) return bad(res, '此舱段没有门禁线路'); if (W4PZ.KIND[loc] !== 'circ') return bad(res, '此舱段不是接线线路'); if (nd.k >= W4PZ.perOf(loc)) return bad(res, '本舱段线路已全部桥接', 409); if (!pz.unl[me + ':' + loc]) return bad(res, '请先使用机械维修打开检修口', 409);
     if (!Array.isArray(b.rots) || b.rots.length !== nd.c.m.length || +b.k !== nd.k) return bad(res, '线路已变化，请重试', 409); if (!W4PZ.circOk(nd.c, b.rots.map(x => (+x | 0) & 3))) return bad(res, '线路未接通', 409);
-    nd.k++; nd.by.push(nm); nd.c = W4PZ.circGen(5); const t = W4PZ.total(pz); if (nd.k >= W4PZ.PER) gameLog(r, '【系统】：' + W4_NAME[loc] + '线路已全部桥接', 'gm', 'bc');
-    if (t >= W4PZ.MAX) gameLog(r, '【系统】：舰桥门禁供电恢复 · 门禁程序需在三级总控接管', 'gm', 'bc'); }
+    nd.k++; nd.by.push(nm); nd.c = W4PZ.gen(loc); const t = W4PZ.total(pz); if (nd.k >= W4PZ.perOf(loc)) gameLog(r, w4T('nodeDone', { 舱段: W4_NAME[loc] }), 'gm', 'bc');
+    if (t >= W4PZ.MAX) gameLog(r, w4T('powerOn'), 'gm', 'bc'); }
+  else if (b.op === 'path') { const nd = pz.nodes[loc]; if (!nd || W4PZ.KIND[loc] !== 'path') return bad(res, '此舱段没有一笔画线路'); if (nd.k >= W4PZ.perOf(loc)) return bad(res, '本舱段线路已全部桥接', 409); if (!pz.unl[me + ':' + loc]) return bad(res, '请先使用机械维修打开检修口', 409); if (+b.k !== nd.k) return bad(res, '线路已变化，请重试', 409); if (!W4PZ.pathOk(nd.c, b.p)) return bad(res, '线路未连通', 409);
+    nd.k++; nd.by.push(nm); nd.c = W4PZ.gen(loc); const t = W4PZ.total(pz); if (nd.k >= W4PZ.perOf(loc)) gameLog(r, w4T('nodeDone', { 舱段: W4_NAME[loc] }), 'gm', 'bc'); if (t >= W4PZ.MAX) gameLog(r, w4T('powerOn'), 'gm', 'bc'); }
   else if (b.op === 'hack') { if (loc !== W4PZ.HACK) return bad(res, '门禁程序终端在三级总控'); if (W4PZ.total(pz) < W4PZ.MAX) return bad(res, '门禁供电不足', 409); if (!pz.hunl[me]) return bad(res, '请先使用信息重构接入门禁程序', 409); if (now < (pz.lock || 0)) return bad(res, '终端锁定中', 409);
-    if (W4PZ.hexOk(pz.hack, b.path)) { pz.hk = (pz.hk || 0) + 1; pz.hack = W4PZ.hexGen(5, 6, 3); if (pz.hk >= W4PZ.HPER) { pz.hackDone = nm; pz.door = true; gameLog(r, '【系统】：门禁程序接管成功（' + nm + '）· 舰桥舱门已解锁', 'gm', 'bc'); } }
-    else { fail = true; pz.lock = now + 60e3; pz.hack = W4PZ.hexGen(5, 6, 3); gameLog(r, '【系统】：门禁入侵失败（' + nm + '）· 终端锁定 60 秒', 'gm', 'bc'); } }
-  else if (b.op === 'breach') { if (loc !== 'airlock') return bad(res, '只能在气密兼对接模块爆破舰桥舱门'); pz.door = true; pz.breach = true; const sh = shipGet(), d = defOf(sh, 'airlock'); sh.def.airlock = { ...(sh.def.airlock || {}), p: Math.max(0, d.p - 15) }; shipSet(sh); W.suits = Math.max(0, W.suits - 5); const fx = r.game.fx = r.game.fx || {}; fx.hit = (fx.hit || 0) + 1;
-    gameLog(r, '【广播】：舰桥舱门被强行爆破（' + nm + '）！气密兼对接模块结构受损，宇航服柜损毁 5 套', 'gm', 'bc'); }
+    if (W4PZ.regOk(pz.hack, b.ops)) { pz.hk = (pz.hk || 0) + 1; pz.hack = W4PZ.regGen(); if (pz.hk >= W4PZ.HPER) { pz.hackDone = nm; pz.door = true; const fxU = r.game.fx = r.game.fx || {}; fxU.unlock = (fxU.unlock || 0) + 1; gameLog(r, w4T('hackDone', { 人: nm }), 'gm', 'bc'); } }
+    else { fail = true; pz.lock = now + 60e3; pz.hack = W4PZ.regGen(); gameLog(r, w4T('hackFail', { 人: nm }), 'gm', 'bc'); } }
   else return bad(res, '无效操作');
   w4Scan(r); mainSave(r); res.json({ room: fieldOut(req.params.id), fail });
 });
@@ -1451,6 +1503,7 @@ api.post('/field/rooms/:id/w4', auth, admin, once, (req, res) => {
   else if (b.op === 'boom') { if (W.boom) return bad(res, '驾驶模块已爆炸', 409); w4Boom(r); }
   else if (b.op === 'def' && [...W4_MODS, 'cockpit'].includes(b.mod) && (b.k === 'p' || b.k === 's')) { const sh = shipGet(), d = defOf(sh, b.mod); sh.def[b.mod] = { ...(sh.def[b.mod] || {}), [b.k]: Math.max(0, Math.min(30, d[b.k] + Math.round(+b.d || 0))) }; shipSet(sh); }
   else if (b.op === 'mod' && SHIP_MODS.includes(b.mod)) { if (b.broken) { if ((shipGet().broken || []).includes(b.mod)) return bad(res, '该模块已损坏', 409); w4Break(r, b.mod); } else { const sh = shipGet(); sh.broken = (sh.broken || []).filter(x => x !== b.mod); const d = defOf(sh, b.mod); sh.def[b.mod] = { ...(sh.def[b.mod] || {}), p: Math.max(1, d.p) }; shipSet(sh); gameLog(r, '【广播】：' + W4_NAME[b.mod] + '已完成紧急修复', 'gm', 'bc'); } }
+  else if (b.op === 'modFull') { const sh = shipGet(), ids = b.mod === 'all' ? W4_MODS.concat('cockpit') : [b.mod].filter(m => [...W4_MODS, 'cockpit'].includes(m)), fixed = []; ids.forEach(m => { if ((sh.lost || []).includes(m)) return; if ((sh.broken || []).includes(m)) fixed.push(W4_NAME[m]); sh.broken = (sh.broken || []).filter(x => x !== m); sh.def[m] = { ...(sh.def[m] || {}), p: 30, s: 30 }; }); shipSet(sh); if (fixed.length) gameLog(r, '【广播】：' + fixed.join('、') + '已完成紧急修复', 'gm', 'bc'); }
   else if (b.op === 'alert') { const a = W.alerts.find(x => x.id === +b.id); if (!a) return bad(res, '提醒已失效', 404); const act = String(b.act || '');
     if (act === 'no') { W.ack[a.k] = true; W.alerts = W.alerts.filter(x => x !== a); }
     else if (a.kind === 'mod' && act === 'yes') { W.alerts = W.alerts.filter(x => x !== a); w4Break(r, a.target); }
@@ -1461,7 +1514,7 @@ api.post('/field/rooms/:id/w4', auth, admin, once, (req, res) => {
   else if (b.op === 'bc') { const t = str(b.text, 200); if (!t) return bad(res, '请填写广播内容'); const nz = Math.max(0, Math.min(100, Math.round(+b.noise || 0))); W.noise = nz; w4Bc(r, t, { noise: nz, scope: ['main', 'van', 'all'].includes(b.scope) ? b.scope : 'all' }); }
   else if (b.op === 'erGap' && [10, 5, 2].includes(+b.v)) W.erGap = +b.v;
   else if (b.op === 'strike') { const sh = shipGet(), live = W4_MODS.filter(m => !sh.lost.includes(m) && !(sh.broken || []).includes(m)), hit = []; for (let i = 0; i < 3 && live.length; i++) { const m = live.splice(crypto.randomInt(0, live.length), 1)[0], d = defOf(sh, m), dp = crypto.randomInt(1, 7), ds = crypto.randomInt(1, 4); sh.def[m] = { ...(sh.def[m] || {}), p: Math.max(0, d.p - dp), s: Math.max(0, d.s - ds) }; hit.push(W4_NAME[m]); gameLog(r, '〔冲击〕' + W4_NAME[m] + ' 物理 −' + dp + ' · 特殊 −' + ds, 'sys', '', { hide: true }); }
-    shipSet(sh); const fx = r.game.fx = r.game.fx || {}; fx.hit = (fx.hit || 0) + 1; w4Bc(r, '舰体遭到鱼群撞击！' + hit.join('、') + '受损', { scope: 'main' }); }
+    shipSet(sh); const fx = r.game.fx = r.game.fx || {}; fx.hit = (fx.hit || 0) + 1; w4Bc(r, '舰体遭到无法判明的行动源撞击！' + hit.join('、') + '受损', { scope: 'main' }); }
   else if (b.op === 'bcd') { if (W.boom) return bad(res, '驾驶模块已爆炸', 409); if (b.on) { W.bcd = now + W4_BCD; W.bcdStep = 0; const fx = r.game.fx = r.game.fx || {}; fx.alarm = true; gameLog(r, '〔调度〕舰桥爆炸倒计时开始 · 5 分钟', 'sys', '', { hide: true }); } else { W.bcd = 0; gameLog(r, '〔调度〕舰桥倒计时已取消', 'sys', '', { hide: true }); } }
   else if (b.op === 'dockFix') { W.dock = W.dock === 'ok' ? 'broken' : 'ok'; if (W.dock === 'ok') w4Bc(r, '气密兼对接模块双向气阀已恢复 · 先锋舰可以开始接驳'); }
   else if (b.op === 'vdock' && (b.k === '1' || b.k === '2')) { W.vdock = W.vdock || {}; W.vdock[b.k] = !W.vdock[b.k]; if (W.vdock[b.k]) w4Bc(r, '先锋舰' + (b.k === '1' ? '一' : '二') + '号已完成接驳 · 船员正在登舰'); }
@@ -1469,13 +1522,18 @@ api.post('/field/rooms/:id/w4', auth, admin, once, (req, res) => {
   else if (b.op === 'cg') { const img = b.image || b.url || ''; if (!isImg(img) && !MEDIA_RE.test(img)) return bad(res, '图片格式或大小不支持'); const cap = str(b.cap, 120); W.cgs = [{ url: img, cap }, ...(W.cgs || []).filter(x => x.url !== img)].slice(0, 12);
     const push = o => { gameLog(o, '【调度】发送了 CG', 'cg', '', { img, by: req.user.id }); if (cap) gameLog(o, cap, 'gm', 'narr'); }; push(r); if (b.sync) Object.keys(FIELD).forEach(k => { const o = FIELD[k]; if (o !== r && !o.fun && !o.main && !o.w4 && o.started && o.game) push(o); }); }
   else if (b.op === 'pzReset') { W.pz = W4PZ.fresh((W.pz || {}).v); W.pz.reveal = false; gameLog(r, '〔调度〕舰桥门禁谜题已重置', 'sys', '', { hide: true }); }
-  else if (b.op === 'pzNode' && w4Pz(r).nodes[b.id]) { const nd = w4Pz(r).nodes[b.id]; if (nd.k >= W4PZ.PER) { nd.k = 0; nd.by = []; } else { nd.k++; nd.by.push('调度'); } nd.c = W4PZ.circGen(5); }
+  else if (b.op === 'pzNode' && w4Pz(r).nodes[b.id]) { const nd = w4Pz(r).nodes[b.id]; if (nd.k >= W4PZ.perOf(b.id)) { nd.k = 0; nd.by = []; } else { nd.k++; nd.by.push('调度'); } nd.c = W4PZ.gen(b.id); }
   else if (b.op === 'reveal') { const pz = w4Pz(r); pz.reveal = !pz.reveal; }
   else if (b.op === 'unlock') { const fx = r.game.fx = r.game.fx || {}; fx.unlock = (fx.unlock || 0) + 1; gameLog(r, '〔调度〕发送了「舰桥舱门已解锁」演出', 'sys', '', { hide: true }); }
+  else if (b.op === 'erl' && W4PZ.ERL0[b.k] && Array.isArray(b.list)) { const L = b.list.map(x => str(x, 200)).filter(Boolean).slice(0, 40); if (L.length) W4_ERL[b.k] = L; else delete W4_ERL[b.k]; try { db.prepare("insert or replace into kv(k, v) values('w4_erl', ?)").run(JSON.stringify(W4_ERL)); } catch (e) {} }
+  else if (b.op === 'txt') { const k = String(b.k || ''); if (!W4PZ.TXT0[k]) return bad(res, '无效文案'); const v = str(b.v, 300); if (v && v !== W4PZ.TXT0[k]) W4_TXT[k] = v; else delete W4_TXT[k]; try { db.prepare("insert or replace into kv(k, v) values('w4_txt', ?)").run(JSON.stringify(W4_TXT)); } catch (e) {} }
   else if (b.op === 'presets' && Array.isArray(b.list)) { W4_PRE = b.list.map(x => str(x, 200)).filter(Boolean).slice(0, 60); try { db.prepare("insert or replace into kv(k, v) values('w4_presets', ?)").run(JSON.stringify(W4_PRE)); } catch (e) {} }
+  else if (b.op === 'ciSet' && ['comm', 'mach'].includes(b.k)) { const pz = w4Pz(r); pz.ci[b.k] = !pz.ci[b.k]; }
+  else if (b.op === 'ciSig') { const pz = w4Pz(r); pz.ci.sig = true; const fx = r.game.fx = r.game.fx || {}; fx.sig = (fx.sig || 0) + 1; gameLog(r, '【先锋舰加急通讯】：' + w4T('ciSig'), 'gm', 'bc'); }
   else if (b.op === 'pzCi') { const pz = w4Pz(r); pz.ci = pz.ci || { g: 0, ok: {}, lk: {} }; pz.ci.g = ((pz.ci.g || 0) + 1) % 4; }
+  else if (b.op === 'pzHk') { const pz = w4Pz(r); if (pz.hackDone) return bad(res, '门禁已接管', 409); pz.hk = Math.min(W4PZ.HPER, (pz.hk || 0) + 1); pz.lock = 0; pz.hack = W4PZ.regGen(); if (pz.hk >= W4PZ.HPER) { pz.hackDone = '调度'; pz.door = true; const fxU = r.game.fx = r.game.fx || {}; fxU.unlock = (fxU.unlock || 0) + 1; gameLog(r, w4T('hackDone', { 人: '调度' }), 'gm', 'bc'); } }
   else if (b.op === 'pzHack') { const pz = w4Pz(r); pz.hackDone = pz.hackDone ? '' : '调度'; pz.hk = pz.hackDone ? W4PZ.HPER : 0; pz.door = !!pz.hackDone || pz.breach; }
-  else if (b.op === 'pzDoor') { const pz = w4Pz(r); pz.door = !pz.door; if (pz.door) gameLog(r, '【系统】：舰桥舱门已解锁', 'gm', 'bc'); }
+  else if (b.op === 'pzDoor') { const pz = w4Pz(r); pz.door = !pz.door; if (pz.door) gameLog(r, w4T('doorGm'), 'gm', 'bc'); }
   else if (b.op === 'reset') { const sh = shipGet(); [...W4_MODS, 'cockpit'].forEach(m => { delete sh.def[m]; }); sh.broken = []; sh.boom = 0; shipSet(sh); r.game.w4 = null; w4Of(r); gameLog(r, '〔调度〕主舰状态已重置', 'sys', '', { hide: true }); }
   else return bad(res, '无效操作');
   w4Scan(r); mainSave(r); res.json({ room: fieldOut(req.params.id, true) });
