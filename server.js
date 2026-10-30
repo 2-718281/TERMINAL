@@ -184,7 +184,6 @@ app.use(express.json({ limit: '12mb' }));
 app.use((req, res, next) => { try { convertBody(req.body, 0); } catch (e) {} next(); });
 app.use('/moon', express.static(path.join(__dirname, 'moon'), { maxAge: '1h' }));
 app.use('/orbit', express.static(path.join(__dirname, 'orbit'), { maxAge: '1h' }));
-app.use('/repair', express.static(path.join(__dirname, 'repair'), { maxAge: '1h' }));
 app.use('/sppdb/fonts', express.static(path.join(__dirname, 'fonts'), { immutable: true, maxAge: '365d', index: false }));
 app.use('/sppdb', express.static(path.join(__dirname, 'sppdb'), { maxAge: '1h' }));
 app.use('/fonts', express.static(path.join(__dirname, 'fonts'), { immutable: true, maxAge: '365d', index: false }));
