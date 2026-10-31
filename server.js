@@ -186,16 +186,16 @@ const postCount = id => db.prepare('select count(*) n from posts where author = 
 const app = express();
 app.use(express.json({ limit: '12mb' }));
 app.use((req, res, next) => { try { convertBody(req.body, 0); } catch (e) {} next(); });
-app.use('/moon', express.static(path.join(__dirname, 'moon'), { maxAge: '1h' }));
-app.use('/orbit', express.static(path.join(__dirname, 'orbit'), { maxAge: '1h' }));
-app.use('/repair', express.static(path.join(__dirname, 'repair'), { maxAge: '1h' }));
-app.use('/recruit', express.static(path.join(__dirname, 'recruit'), { maxAge: '1h' }));
+app.use('/moon', express.static(path.join(__dirname, 'moon'), { maxAge: 0, etag: true, setHeaders: r => r.set('Cache-Control', 'no-cache') }));
+app.use('/orbit', express.static(path.join(__dirname, 'orbit'), { maxAge: 0, etag: true, setHeaders: r => r.set('Cache-Control', 'no-cache') }));
+app.use('/repair', express.static(path.join(__dirname, 'repair'), { maxAge: 0, etag: true, setHeaders: r => r.set('Cache-Control', 'no-cache') }));
+app.use('/recruit', express.static(path.join(__dirname, 'recruit'), { maxAge: 0, etag: true, setHeaders: r => r.set('Cache-Control', 'no-cache') }));
 app.use('/sppdb/fonts', express.static(path.join(__dirname, 'fonts'), { immutable: true, maxAge: '365d', index: false }));
-app.use('/sppdb', express.static(path.join(__dirname, 'sppdb'), { maxAge: '1h' }));
+app.use('/sppdb', express.static(path.join(__dirname, 'sppdb'), { maxAge: 0, etag: true, setHeaders: r => r.set('Cache-Control', 'no-cache') }));
 app.use('/fonts', express.static(path.join(__dirname, 'fonts'), { immutable: true, maxAge: '365d', index: false }));
 app.use('/media', express.static(MEDIA, { immutable: true, maxAge: '365d', index: false, dotfiles: 'deny' }));
 const INDEX = [path.join(__dirname, 'public', 'index.html'), path.join(__dirname, 'index.html')].find(f => fs.existsSync(f));
-app.get(['/', '/index.html'], (req, res) => INDEX ? res.sendFile(INDEX) : res.status(404).send('index.html not found'));
+app.get(['/', '/index.html'], (req, res) => { if (!INDEX) return res.status(404).send('index.html not found'); res.set('Cache-Control', 'no-cache'); res.sendFile(INDEX); });
 const STATIC = { '/manifest.webmanifest': 'application/manifest+json', '/sw.js': 'text/javascript', '/icon-192.png': 'image/png', '/icon-512.png': 'image/png', '/apple-touch-icon.png': 'image/png', '/laugh.wav': 'audio/wav' };
 Object.entries(STATIC).forEach(([u, type]) => app.get(u, (req, res) => {
   const f = path.join(__dirname, u.slice(1)); if (!fs.existsSync(f)) return res.status(404).end();
@@ -322,9 +322,11 @@ api.get('/users/:id/posts', auth, (req, res) => {
 
 let GFX = { hit: 0, alarm: false, deep: false }; try { const r0 = db.prepare("select v from meta where k = 'gfx'").get(); if (r0) GFX = { ...GFX, ...JSON.parse(r0.v) }; } catch (e) {}
 api.post('/admin/gfx', auth, admin, (req, res) => { const k = (req.body || {}).k; if (k === 'hit') GFX.hit = (GFX.hit || 0) + 1; else if (k === 'alarm' || k === 'deep') GFX[k] = !GFX[k]; else return bad(res, '无效演出'); db.prepare("insert or replace into meta values('gfx', ?)").run(JSON.stringify(GFX)); res.json({ fx: GFX }); });
-const BUILD = (() => { try { return String(Math.floor(fs.statSync(path.join(__dirname, 'index.html')).mtimeMs)); } catch (e) { return String(Date.now()); } })();
+const BUILD_FILES = ['index.html', 'public/index.html', 'moon/index.html', 'orbit/index.html', 'repair/index.html', 'sppdb/index.html', 'recruit/index.html'];
+let BUILD = '', BUILD_AT = 0;
+const buildId = () => { if (Date.now() - BUILD_AT < 10000 && BUILD) return BUILD; BUILD_AT = Date.now(); BUILD = BUILD_FILES.map(f => { try { return Math.floor(fs.statSync(path.join(__dirname, f)).mtimeMs).toString(36); } catch (e) { return '0'; } }).join('.'); return BUILD; };
 api.get('/pulse', auth, (req, res) => res.json({
-  now: Date.now(), build: BUILD, fx: GFX, dead: !!(getUser(req.user.id) || {}).dead,
+  now: Date.now(), build: buildId(), fx: GFX, dead: !!(getUser(req.user.id) || {}).dead,
   post: db.prepare('select coalesce(max(id), 0) n from posts').get().n,
   unread: db.prepare('select count(*) n from notifs where user_id = ? and read = 0').get(req.user.id).n,
   ann: db.prepare('select coalesce(max(id), 0) n from announcements').get().n
