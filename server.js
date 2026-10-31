@@ -304,8 +304,9 @@ api.get('/users/:id/posts', auth, (req, res) => {
 
 let GFX = { hit: 0, alarm: false, deep: false }; try { const r0 = db.prepare("select v from meta where k = 'gfx'").get(); if (r0) GFX = { ...GFX, ...JSON.parse(r0.v) }; } catch (e) {}
 api.post('/admin/gfx', auth, admin, (req, res) => { const k = (req.body || {}).k; if (k === 'hit') GFX.hit = (GFX.hit || 0) + 1; else if (k === 'alarm' || k === 'deep') GFX[k] = !GFX[k]; else return bad(res, '无效演出'); db.prepare("insert or replace into meta values('gfx', ?)").run(JSON.stringify(GFX)); res.json({ fx: GFX }); });
+const BUILD = (() => { try { return String(Math.floor(fs.statSync(path.join(__dirname, 'index.html')).mtimeMs)); } catch (e) { return String(Date.now()); } })();
 api.get('/pulse', auth, (req, res) => res.json({
-  now: Date.now(), fx: GFX, dead: !!(getUser(req.user.id) || {}).dead,
+  now: Date.now(), build: BUILD, fx: GFX, dead: !!(getUser(req.user.id) || {}).dead,
   post: db.prepare('select coalesce(max(id), 0) n from posts').get().n,
   unread: db.prepare('select count(*) n from notifs where user_id = ? and read = 0').get(req.user.id).n,
   ann: db.prepare('select coalesce(max(id), 0) n from announcements').get().n
