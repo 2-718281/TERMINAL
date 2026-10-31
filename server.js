@@ -32,7 +32,7 @@ const TITLES = [
   T_('orbit', 'o1', 0, '模拟器高手', '航线规划培训 · 达成精确航线'), T_('orbit', 'o2', 0, '完成培训', '航线规划培训 · 完成任务'), T_('orbit', 'o3', 0, '我们要去哪?', '航线规划培训 · 偏离原定计划'),
   T_('ofail', 'of10', 10, '飞船爆破手', '航线模拟失败 10 次'), T_('ofail', 'of20', 20, '舰桥流放者', '航线模拟失败 20 次'), T_('ofail', 'of30', 30, '驾驶部公敌', '航线模拟失败 30 次'),
   T_('spp', 'sp1', 0, '研究部大胜利', '信号处理数据库 · 完成 TX-01、TX-02 破译'), T_('spp', 'sp1x', 0, '研究部行不行啊？', '信号处理数据库 · 以非研究部身份完成 TX-01、TX-02 破译'), T_('spp', 'sp2', 0, '赫尔墨斯的门徒', '信号处理数据库 · 未完成基准校准即完成 TX-01、TX-02 破译与全部索引对应'), T_('spp', 'sp3', 0, '归祭', ''), T_('spp', 'sp4', 0, '方程末端的红发', ''),
-  T_('spcal', 'sp6', 11, '失去研究部访问权', '基准校准阶段提交错误超过 10 次'), T_('sptx', 'sp7', 11, '超算算力滥用者', '破译提交错误超过 10 次')
+  T_('spcal', 'sp6', 11, '失去研究部访问权', '基准校准阶段提交错误超过 10 次'), T_('sptx', 'sp7', 11, '超算算力滥用者', '破译提交错误超过 10 次'), T_('repair', 'rp1', 0, '耗材的守护者', '防御线路接驳 · 未申请任何耗材且零浪费完成全部工单'), T_('repair', 'rp2', 0, '这里有后勤部！', '防御线路接驳 · 完成全部工单'), T_('repair', 'rp3', 0, '后勤部仓库里的老鼠', '防御线路接驳 · 耗尽耗材 3 次以上且未完成工单'), T_('secret', 'rp4', 0, '于莱斯博斯的悬崖旁', '')
 ];
 
 const db = new Database(path.join(__dirname, 'data.db'));
@@ -184,6 +184,7 @@ app.use(express.json({ limit: '12mb' }));
 app.use((req, res, next) => { try { convertBody(req.body, 0); } catch (e) {} next(); });
 app.use('/moon', express.static(path.join(__dirname, 'moon'), { maxAge: '1h' }));
 app.use('/orbit', express.static(path.join(__dirname, 'orbit'), { maxAge: '1h' }));
+app.use('/repair', express.static(path.join(__dirname, 'repair'), { maxAge: '1h' }));
 app.use('/sppdb/fonts', express.static(path.join(__dirname, 'fonts'), { immutable: true, maxAge: '365d', index: false }));
 app.use('/sppdb', express.static(path.join(__dirname, 'sppdb'), { maxAge: '1h' }));
 app.use('/fonts', express.static(path.join(__dirname, 'fonts'), { immutable: true, maxAge: '365d', index: false }));
@@ -240,7 +241,7 @@ function postOut(p, me) {
   const reported = !!db.prepare('select 1 from reports where post_id = ? and user_id = ?').get(p.id, me);
   const faved = !!db.prepare('select 1 from favs where post_id = ? and user_id = ?').get(p.id, me);
   const comments = db.prepare('select c.id, c.author, coalesce(u.name, c.author) name, c.text, c.created_at createdAt, c.reply_to replyTo, coalesce(r.name, c.reply_to) replyName from comments c left join users u on u.id = c.author left join users r on r.id = c.reply_to where c.post_id = ? order by c.id').all(p.id);
-  return { id: p.id, author: p.author, authorName: a ? a.name : p.author, authorAvatar: a ? a.avatar || '' : '', authorBadge: a ? pub(a).badgeName : '', text: p.text, image: p.image || '', images: postImages(p), createdAt: p.created_at, likeCount, liked, reported, faved, comments };
+  return { id: p.id, author: p.author, authorDead: !!(a && a.dead), authorName: a ? a.name : p.author, authorAvatar: a ? a.avatar || '' : '', authorBadge: a ? pub(a).badgeName : '', text: p.text, image: p.image || '', images: postImages(p), createdAt: p.created_at, likeCount, liked, reported, faved, comments };
 }
 const annList = () => db.prepare('select id, title, body, date, author from announcements order by id desc limit 20').all();
 const str = (v, n) => typeof v === 'string' ? v.trim().slice(0, n) : '';
@@ -608,7 +609,7 @@ api.post('/achv', auth, (req, res) => {
     if (fresh.length) db.prepare('update users set titles = ? where id = ?').run(JSON.stringify([...have, ...fresh.map(t => t.key)]), u.id);
     return res.json({ user: self(getUser(u.id)), newTitles: fresh.map(t => ({ name: t.name, cond: t.cond })) });
   }
-  const t = TITLES.find(x => (x.kind === 'secret' || x.kind === 'orbit') && x.key === req.body.key); if (!t) return bad(res, '无效');
+  const t = TITLES.find(x => (x.kind === 'secret' || x.kind === 'orbit' || x.kind === 'repair') && x.key === req.body.key); if (!t) return bad(res, '无效');
   const u = getUser(req.user.id), have = owned(u);
   if (have.includes(t.key)) return res.json({ user: self(u), newTitles: [] });
   db.prepare('update users set titles = ? where id = ?').run(JSON.stringify([...have, t.key]), u.id);
@@ -1169,7 +1170,7 @@ api.post('/field/rooms/:id/judge', auth, admin, once, (req, res) => {
     const net = bo - pe, u = crypto.randomInt(0, 10), ts = Array.from({ length: 1 + Math.abs(net) }, () => crypto.randomInt(0, 10)), vals = ts.map(t => (t * 10 + u) || 100), roll = net > 0 ? Math.min(...vals) : net < 0 ? Math.max(...vals) : vals[0], lv = rollLevel(roll, p.val);
     const expr = net === 0 ? 'D100=' + roll : (net > 0 ? 'b' : 'p') + Math.abs(net) + '=D100=' + vals[0] + ', [' + (net > 0 ? '奖励骰' : '惩罚骰') + ':' + ts.slice(1).join(',') + '] = ' + roll;
     const RK = { '大失败': 0, '失败': 1, '常规成功': 2, '困难成功': 3, '极难成功': 4, '大成功': 5 }, met = RK[lv] >= { '常规': 2, '困难': 3, '极难': 4 }[need];
-    gameLog(r, '【' + p.name + '】' + (hs.length ? '与' + hs.map(h => '【' + h.name + '】').join('') + '协同，' : '') + on + (p.item ? '借助【' + p.item + '】' : '') + '进行【' + p.label + '】检定 · 需要等级=' + need + '\n' + expr + '/' + p.val + ' ' + lv + (need !== '常规' ? (met ? '（达成）' : '（未达成）') : ''), 'roll', met ? lv : lv === '大失败' ? '大失败' : '未达成'); g.state = 'resolved'; hs.forEach(h => { (g.skip = g.skip || {})[h.uid] = g.round; }); if (lv === '大失败') { const i = mGet(r, p.uid); if (i) mSet(r, p.uid, 'er', Math.min(100, i.er + 20)); } }
+    gameLog(r, '【' + p.name + '】' + (hs.length ? '与' + hs.map(h => '【' + h.name + '】').join('') + '协同，' : '') + on + (p.item ? '借助【' + p.item + '】' : '') + '进行【' + p.label + '】检定 · 需要等级=' + need + '\n' + expr + '/' + p.val + ' ' + lv + (need !== '常规' ? (met ? '（达成）' : '（未达成）') : ''), 'roll', met ? lv : lv === '大失败' ? '大失败' : '未达成'); g.state = 'resolved'; hs.forEach(h => { (g.skip = g.skip || {})[h.uid] = g.round; }); if (lv === '大失败') { const i = mGet(r, p.uid); if (i) mSet(r, p.uid, 'er', Math.min(100, (+i.er || 0) + 20)); } }
   else { if (p.text) gameLog(r, '【' + p.name + '】：' + p.text, 'free'); gameLog(r, '【' + p.name + '】' + on + (p.item ? '使用了【' + p.item + '】' : '进行了人为干涉'), p.item ? 'item' : 'sys'); g.state = 'resolved'; }
   res.json({ room: fieldOut(req.params.id, true) });
 });
@@ -1314,7 +1315,7 @@ const shipOut = me => ({
   meDead: !!(getUser(me) || {}).dead,
   ship: shipGet(), me: sortieOf(me) || baseLoc(getUser(me)),
   fleet: Object.keys(FIELD).filter(k => !FIELD[k].fun).map(k => ({ id: +k, started: !!FIELD[k].started, ids: FIELD[k].started ? Object.keys(FIELD[k].members) : [] })),
-  crew: db.prepare('select id, name, dept, loc, dead from users').all().map(u => ({ id: u.id, name: realName(u.id, u.name), dept: u.dept || '', loc: sortieOf(u.id) || baseLoc(u), dead: !!u.dead }))
+  crew: db.prepare('select id, name, dept, loc, dead, er from users').all().map(u => ({ id: u.id, name: realName(u.id, u.name), dept: u.dept || '', loc: sortieOf(u.id) || baseLoc(u), dead: !!u.dead, er: +u.er || 0 }))
 });
 api.get('/ship', auth, (req, res) => res.json(shipOut(req.user.id)));
 const W4PZ = (() => {
@@ -1471,7 +1472,7 @@ function w4Tick() {
     if (nv === 0) gameLog(r, '【广播】：' + w4T('bcDefOut', { 防御: lb }), 'gm', 'bc'); else if (nv <= 10 && was > 10) gameLog(r, '【广播】：' + w4T('bcDefLow', { 防御: lb, 值: nv }), 'gm', 'bc'); });
   sh = sh || shipGet();
   [...W4_MODS, 'cockpit'].forEach(m => { if (defOf(sh, m).s > 0 || (sh.broken || []).includes(m)) { delete W.zero[m]; return; } if (!W.zero[m]) { W.zero[m] = now; save = true; return; } if (now - W.zero[m] < (W.erGap || 10) * 60e3) return; W.zero[m] = now; save = true;
-    w4Occ(r, m).forEach(x => { const i = mGet(r, x); if (!i) return; const nv = Math.min(100, (+i.er || 0) + 3); mSet(r, x, 'er', nv); }); });
+    if (!W.t0) return; w4Occ(r, m).filter(x => !(r.members[x] || {}).away).forEach(x => { const i = mGet(r, x); if (!i) return; const nv = Math.min(100, (+i.er || 0) + 3); mSet(r, x, 'er', nv); }); });
   if (dirty) shipSet(sh);
   Object.keys(W.treat || {}).forEach(x => { const T = W.treat[x], nm = r.members[x] ? memberInfo(r, x).name : x; if (!r.members[x] || isDead(r, x)) { delete W.treat[x]; save = true; return; }
     if (w4LocOf(r, x) !== T.loc) { delete W.treat[x]; save = true; gameLog(r, '【' + nm + '】离开了治疗所在的舱室，医学治疗中断', 'sys'); return; }
@@ -1571,10 +1572,12 @@ api.post('/ship/move', auth, (req, res) => {
   db.prepare('update users set loc = ? where id = ?').run(to, req.user.id); res.json(shipOut(req.user.id));
 });
 api.post('/admin/crew/dead', auth, admin, (req, res) => { const b = req.body || {}; if (!getUser(b.uid)) return bad(res, '用户不存在', 404); db.prepare('update users set dead = ? where id = ?').run(b.dead ? 1 : 0, b.uid); res.json(shipOut(req.user.id)); });
+api.post('/admin/crew/er', auth, admin, (req, res) => { const b = req.body || {}; if (!getUser(b.uid)) return bad(res, '用户不存在', 404); const v = Math.max(0, Math.min(100, Math.round(+b.er || 0))); db.prepare('update users set er = ? where id = ?').run(v, b.uid); res.json(shipOut(req.user.id)); });
 api.post('/admin/ship', auth, admin, (req, res) => {
   const b = req.body || {}, s = shipGet();
   if (Array.isArray(b.lost)) { const nl = [...new Set(b.lost.filter(x => SHIP_MODS.includes(x) || x === 'sc1' || x === 'sc2'))], fresh = nl.filter(x => !s.lost.includes(x)); if (fresh.length) db.prepare('select id, loc from users').all().forEach(u => { const so = sortieOf(u.id); if (so ? fresh.includes(so) : fresh.includes(baseLoc(u))) db.prepare('update users set dead = 1 where id = ?').run(u.id); }); s.lost = nl; }
   if (typeof b.w4 === 'boolean') s.w4 = b.w4;
+  if (typeof b.hw === 'boolean') s.hw = b.hw;
   if (b.legs != null) {
     if (!Array.isArray(b.legs) || !b.legs.length || b.legs.length > 8) return bad(res, '航段数需为 1–8');
     const L = b.legs.map(l => ({ r: Math.round(+(l || {}).r * 100) / 100, n: Math.floor(+(l || {}).n) }));
