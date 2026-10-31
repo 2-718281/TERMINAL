@@ -32,7 +32,7 @@ const TITLES = [
   T_('orbit', 'o1', 0, '模拟器高手', '航线规划培训 · 达成精确航线'), T_('orbit', 'o2', 0, '完成培训', '航线规划培训 · 完成任务'), T_('orbit', 'o3', 0, '我们要去哪?', '航线规划培训 · 偏离原定计划'),
   T_('ofail', 'of10', 10, '飞船爆破手', '航线模拟失败 10 次'), T_('ofail', 'of20', 20, '舰桥流放者', '航线模拟失败 20 次'), T_('ofail', 'of30', 30, '驾驶部公敌', '航线模拟失败 30 次'),
   T_('spp', 'sp1', 0, '研究部大胜利', '信号处理数据库 · 完成 TX-01、TX-02 破译'), T_('spp', 'sp1x', 0, '研究部行不行啊？', '信号处理数据库 · 以非研究部身份完成 TX-01、TX-02 破译'), T_('spp', 'sp2', 0, '赫尔墨斯的门徒', '信号处理数据库 · 未完成基准校准即完成 TX-01、TX-02 破译与全部索引对应'), T_('spp', 'sp3', 0, '归祭', ''), T_('spp', 'sp4', 0, '方程末端的红发', ''),
-  T_('spcal', 'sp6', 11, '失去研究部访问权', '基准校准阶段提交错误超过 10 次'), T_('sptx', 'sp7', 11, '超算算力滥用者', '破译提交错误超过 10 次'), T_('repair', 'rp1', 0, '耗材的守护者', '防御线路接驳 · 未申请任何耗材且零浪费完成全部工单'), T_('repair', 'rp2', 0, '这里有后勤部！', '防御线路接驳 · 完成全部工单'), T_('repair', 'rp3', 0, '后勤部仓库里的老鼠', '防御线路接驳 · 耗尽耗材 3 次以上且未完成工单'), T_('secret', 'rp4', 0, '于莱斯博斯的悬崖旁', '')
+  T_('spcal', 'sp6', 11, '失去研究部访问权', '基准校准阶段提交错误超过 10 次'), T_('sptx', 'sp7', 11, '超算算力滥用者', '破译提交错误超过 10 次'), T_('repair', 'rp1', 0, '耗材的守护者', '防御线路接驳 · 未申请任何耗材且零浪费完成全部工单'), T_('repair', 'rp2', 0, '这里有后勤部！', '防御线路接驳 · 完成全部工单'), T_('repair', 'rp3', 0, '后勤部仓库里的老鼠', '防御线路接驳 · 耗尽耗材 3 次以上且未完成工单'), T_('secret', 'rp4', 0, '于莱夫卡斯的悬崖旁', '')
 ];
 
 const db = new Database(path.join(__dirname, 'data.db'));
@@ -137,6 +137,10 @@ setInterval(() => { const now = Date.now(); for (const [k, a] of hits) if (!a.so
 const ID_RE = /^[A-Z0-9_-]{3,20}$/;
 const MAX_IMG = 2_000_000;
 const hashPw = (pw, salt) => crypto.scryptSync(String(pw), salt, 64);
+// 解谜账号：上一次探险留下的实验员终端（不会覆盖已存在的数据）
+{ const GID = 'DA-0822', GPW = 'f421112666'; db.prepare('insert or ignore into allowed_ids values(?)').run(GID);
+  if (!db.prepare('select 1 from users where id = ?').get(GID)) { const salt = crypto.randomBytes(16).toString('hex');
+    db.prepare("insert into users(id, salt, hash, name, title, avatar, created_at, dept, position, gender, birthday, badge, titles) values(?, ?, ?, ?, '', '', ?, '', '员工', '', '', 'base', '[]')").run(GID, salt, hashPw(GPW, salt).toString('hex'), GID, Date.now()); } }
 // ---- 图片单独存放在 media/ 文件夹，数据库只存地址 ----
 const MEDIA = path.join(__dirname, 'media'); fs.mkdirSync(MEDIA, { recursive: true });
 const DATA_RE = /^data:image\/(jpeg|png|webp|gif);base64,/, MEDIA_RE = /^\/media\/[0-9a-f]{40}\.(jpg|png|webp|gif)$/;
