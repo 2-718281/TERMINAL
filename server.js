@@ -202,6 +202,24 @@ Object.entries(STATIC).forEach(([u, type]) => app.get(u, (req, res) => {
   res.type(type); if (u === '/sw.js') res.set('Cache-Control', 'no-cache'); res.sendFile(f);
 }));
 const api = express.Router();
+const GHOST = 'DA-0822';
+api.use((req, res, next) => {
+  const send = res.json.bind(res);
+  res.json = body => {
+    try {
+      const p = req.path || '', me = req.user && req.user.id;
+      if (!body || typeof body !== 'object' || /^\/(auth|me)(\/|$)/.test(p) || /^\/radio/.test(p)) return send(body);
+      if (me === GHOST) {
+        if (!/^\/(posts|notifs)/.test(p)) return send(body);
+        const gw = v => { if (Array.isArray(v)) return v.filter(x => !(x && typeof x === 'object' && (('author' in x && x.author !== me) || ('actor' in x && x.actor !== me)))).map(gw); if (v && typeof v === 'object') for (const k of Object.keys(v)) v[k] = gw(v[k]); return v; };
+        return send(gw(body));
+      }
+      const walk = v => { if (Array.isArray(v)) return v.filter(x => !(x && typeof x === 'object' && (x.id === GHOST || x.author === GHOST || x.actor === GHOST))).map(walk); if (v && typeof v === 'object') for (const k of Object.keys(v)) { if (k === GHOST) delete v[k]; else v[k] = walk(v[k]); } return v; };
+      return send(walk(body));
+    } catch (e) { return send(body); }
+  };
+  next();
+});
 
 function auth(req, res, next) {
   const t = (req.get('authorization') || '').replace(/^Bearer /, '');
@@ -550,8 +568,8 @@ api.post('/vids', auth, admin, async (req, res) => {
   res.json({ items: vidList() });
 });
 api.delete('/vids/:id', auth, admin, (req, res) => { db.prepare('delete from vids where id = ?').run(+req.params.id); res.json({ items: vidList() }); });
-api.get('/radio/today', auth, async (req, res) => { const rows = await fillMeta(db.prepare('select * from radio where day = ? order by id').all(today())); res.json({ day: today(), items: rows.map(r => radioOut(r, req.user.id)) }); });
-api.get('/radio/past', auth, async (req, res) => { const rows = await fillMeta(db.prepare('select * from radio order by id desc limit 200').all()); res.json({ items: rows.map(r => radioOut(r, req.user.id)) }); });
+api.get('/radio/today', auth, async (req, res) => { const rows = await fillMeta(db.prepare('select * from radio where day = ? order by id').all(today()).filter(r => r.author !== GHOST || req.user.id === GHOST)); res.json({ day: today(), items: rows.map(r => radioOut(r, req.user.id)) }); });
+api.get('/radio/past', auth, async (req, res) => { const rows = await fillMeta(db.prepare('select * from radio order by id desc limit 200').all().filter(r => r.author !== GHOST || req.user.id === GHOST)); res.json({ items: rows.map(r => radioOut(r, req.user.id)) }); });
 api.post('/radio', auth, limit('radio'), async (req, res) => {
   const b = req.body, type = RADIO_TYPES[b.type] ? b.type : '', text = str(b.text, 500), image = b.image || '';
   if (!type) return bad(res, '请选择投稿类型');
