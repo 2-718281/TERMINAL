@@ -554,6 +554,7 @@ api.get('/radio/past', auth, async (req, res) => { const rows = await fillMeta(d
 api.post('/radio', auth, limit('radio'), async (req, res) => {
   const b = req.body, type = RADIO_TYPES[b.type] ? b.type : '', text = str(b.text, 500), image = b.image || '';
   if (!type) return bad(res, '请选择投稿类型');
+  if (req.user.id === 'DA-0822' && shipGet().gr) return bad(res, '投稿通道已关闭', 403);
   if (image && !isImg(image)) return bad(res, '图片格式或大小不支持');
   let media = null;
   if (type !== 'say') {
@@ -1583,6 +1584,7 @@ api.post('/admin/ship', auth, admin, (req, res) => {
   if (Array.isArray(b.lost)) { const nl = [...new Set(b.lost.filter(x => SHIP_MODS.includes(x) || x === 'sc1' || x === 'sc2'))], fresh = nl.filter(x => !s.lost.includes(x)); if (fresh.length) db.prepare('select id, loc from users').all().forEach(u => { const so = sortieOf(u.id); if (so ? fresh.includes(so) : fresh.includes(baseLoc(u))) db.prepare('update users set dead = 1 where id = ?').run(u.id); }); s.lost = nl; }
   if (typeof b.w4 === 'boolean') s.w4 = b.w4;
   if (typeof b.hw === 'boolean') s.hw = b.hw;
+  if (typeof b.gr === 'boolean') s.gr = b.gr;
   if (b.legs != null) {
     if (!Array.isArray(b.legs) || !b.legs.length || b.legs.length > 8) return bad(res, '航段数需为 1–8');
     const L = b.legs.map(l => ({ r: Math.round(+(l || {}).r * 100) / 100, n: Math.floor(+(l || {}).n) }));
