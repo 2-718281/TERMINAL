@@ -669,9 +669,11 @@ const W6_ID = '14', mkW6 = () => ({ members: {}, started: false, w4: true, w5: t
 FIELD[W6_ID] = mkW6();
 const w4Open = () => !!shipGet().w4 && !shipGet().w5 && !shipGet().w6, w5Open = () => !!shipGet().w5 && !shipGet().w6, w6Open = () => !!shipGet().w6;
 function w4Join(r, x) { const g = r.game, m = r.members[x]; if (!g || !m || !m.itemsDone || m.away || isDead(r, x) || g.order.includes(x)) return; g.order.push(x); }
+function w6Join(r, x) { const g = r.game, m = r.members[x]; if (!g || !m || !m.itemsDone || m.away || isDead(r, x) || g.order.includes(x)) return; const live = g.order.some(y => r.members[y] && !r.members[y].away && !isDead(r, y)); g.order.push(x); if (!live) { g.turn = g.order.length - 1; g.pending = null; g.state = 'act'; gameTurnLog(r); } }
 function w4Start(r) {
   const ids = Object.keys(r.members), hp = {}; ids.forEach(x => { const st = memberInfo(r, x).stats || {}; hp[x] = Math.floor(((+st.siz || 0) + (+st.con || 0)) / 10); });
-  r.game = { order: ids.filter(x => !r.members[x].away), turn: 0, round: 1, free: true, state: 'act', pending: null, log: [], seq: 0, hp, mad: {}, pendMad: {}, hurt: {}, hit: {} };
+  r.game = { order: ids.filter(x => !r.members[x].away), turn: 0, round: 1, free: !r.w6, state: 'act', pending: null, log: [], seq: 0, hp, mad: {}, pendMad: {}, hurt: {}, hit: {} };
+  if (r.w6) { const g = r.game; g.order = g.order.map(x => ({ x, dex: +((memberInfo(r, x).stats || {}).dex) || 0, k: Math.random() })).sort((a, c) => c.dex - a.dex || a.k - c.k).map(o => o.x); if (g.order.length) gameLog(r, '行动顺序：' + g.order.map(x => memberInfo(r, x).name).join(' → '), 'sys'); gameTurnLog(r); }
   if (!r.w5) try { const sh = shipGet(), opts = ['airlock', 'rcs', 'lab', 'dock', 'farm', 'med', 'hab1', 'hab2', 'truss'].filter(m => !(sh.lost || []).includes(m) && !(sh.broken || []).includes(m)), mv = db.prepare("select id from users where loc = 'cockpit'").all(); if (opts.length) mv.forEach(u => db.prepare('update users set loc = ? where id = ?').run(opts[crypto.randomInt(0, opts.length)], u.id)); } catch (e) { logError('w4', 'cockpitClear', e); }
 }
 function w4Drop(r, x) { const g = r.game; if (!g) return; const i = g.order.indexOf(x); if (i >= 0) g.order.splice(i, 1); }
@@ -687,7 +689,7 @@ FIELD[BJ_ID] = mkBJ();
 const mainSaveT = {}, mainKey = r => r.w4 ? 'w4_room' : 'main_log';
 function mainSave(r) { if (r.w4) return w4Save(r); const K = mainKey(r); clearTimeout(mainSaveT[K]); mainSaveT[K] = setTimeout(() => { try { const g = r.game; db.prepare("insert or replace into kv(k, v) values(?, ?)").run(K, JSON.stringify({ all: g.all || [], seq: g.seq || 0, round: g.round || 1, fx: g.fx || {}, w4: g.w4 || null })); } catch (e) {} }, 2000); }
 function w4Save(r) { const K = r.w6 ? 'w6_room' : r.w5 ? 'w5_room' : 'w4_room'; clearTimeout(mainSaveT[K]); mainSaveT[K] = setTimeout(() => { try { const g = r.game; db.prepare("insert or replace into kv(k, v) values(?, ?)").run(K, JSON.stringify({ v: 2, started: !!r.started, members: r.started ? r.members : {}, game: g ? { ...g, log: undefined, lastSay: undefined } : null })); } catch (e) {} }, 2000); }
-function w4Load(id, K) { try { const x = db.prepare("select v from kv where k = ?").get(K); if (!x) return; const d = JSON.parse(x.v); if (d.v !== 2 || !d.started || !d.game) return; const r = FIELD[id]; r.started = true; r.members = d.members || {}; Object.values(r.members).forEach(m => { m.away = true; m.seen = Date.now(); }); r.game = d.game; r.game.all = r.game.all || []; r.game.log = r.game.all.slice(-300); r.game.order = []; r.game.free = true; r.game.state = 'act'; r.game.pending = null; } catch (e) {} }
+function w4Load(id, K) { try { const x = db.prepare("select v from kv where k = ?").get(K); if (!x) return; const d = JSON.parse(x.v); if (d.v !== 2 || !d.started || !d.game) return; const r = FIELD[id]; r.started = true; r.members = d.members || {}; Object.values(r.members).forEach(m => { m.away = true; m.seen = Date.now(); }); r.game = d.game; r.game.all = r.game.all || []; r.game.log = r.game.all.slice(-300); r.game.order = []; r.game.free = !r.w6; r.game.turn = 0; r.game.state = 'act'; r.game.pending = null; } catch (e) {} }
 function mainLoad() { w4Load(W4_ID, 'w4_room'); w4Load(W5_ID, 'w5_room'); w4Load(W6_ID, 'w6_room'); ['3'].forEach(id => { try { const x = db.prepare("select v from kv where k = ?").get(mainKey(FIELD[id])); if (!x) return; const d = JSON.parse(x.v), g = FIELD[id].game; g.all = Array.isArray(d.all) ? d.all : []; g.log = g.all.slice(-300); g.seq = +d.seq || (g.all.length ? g.all[g.all.length - 1].id : 0); g.round = +d.round || 1; g.fx = d.fx || {}; if (FIELD[id].w4) { g.free = true; g.state = 'act'; g.pending = null; if (d.w4) g.w4 = d.w4; } } catch (e) {} }); }
 function mainClear(r) { if (r.w4) { const K = r.w6 ? 'w6_room' : r.w5 ? 'w5_room' : 'w4_room'; clearTimeout(mainSaveT[K]); try { db.prepare("delete from kv where k = ?").run(K); } catch (e) {} return; } const K = mainKey(r); clearTimeout(mainSaveT[K]); try { db.prepare("delete from kv where k = ?").run(K); } catch (e) {} }
 const FIELD_BOTS = [];
@@ -700,7 +702,7 @@ Object.keys(FIELD).forEach(fieldBots);
 function fieldRoom(id) {
   const r = FIELD[id]; if (!r) return null; const now = Date.now();
   if (r.fun) return funRoom(id, r, now);
-  if (r.w4 && r.started) { Object.keys(r.members).forEach(x => { const m = r.members[x], idle = now - m.seen; if (idle > 6 * 3600e3) { delete r.members[x]; w4Drop(r, x); } else if (idle > 60000 && !m.away) { m.away = true; w4Drop(r, x); } }); r.game.order.filter(x => !r.members[x] || isDead(r, x)).forEach(x => w4Drop(r, x)); Object.keys(r.members).forEach(x => w4Join(r, x)); return r; }
+  if (r.w4 && r.started) { const DROP = r.w6 ? mainDrop : w4Drop, JOIN = r.w6 ? w6Join : w4Join; Object.keys(r.members).forEach(x => { const m = r.members[x], idle = now - m.seen; if (idle > 6 * 3600e3) { delete r.members[x]; DROP(r, x); } else if (idle > 60000 && !m.away) { m.away = true; DROP(r, x); } }); r.game.order.filter(x => !r.members[x] || isDead(r, x)).forEach(x => DROP(r, x)); Object.keys(r.members).forEach(x => JOIN(r, x)); return r; }
   if (r.main) { Object.keys(r.members).forEach(x => { const m = r.members[x], idle = now - m.seen; if (idle > 6 * 3600e3) { delete r.members[x]; mainDrop(r, x); } else if (idle > 60000 && !m.away) { m.away = true; mainDrop(r, x); } }); r.game.order.filter(x => !r.members[x]).forEach(x => mainDrop(r, x)); return r; }
   Object.keys(r.members).forEach(x => { if (!r.started && !r.members[x].bot && now - r.members[x].seen > 20000) delete r.members[x]; });
   if (!Object.keys(r.members).length) r.started = false;
@@ -731,7 +733,7 @@ function mainJoin(r, x) {
   if (!g.order.some(y => r.members[y] && !r.members[y].away && !isDead(r, y))) { g.pending = null; g.state = 'act'; newRound(r); gameTurnLog(r); return; }
   if (!(g.joined = g.joined || {})[x]) { g.joined[x] = g.round; gameLog(r, '【' + memberInfo(r, x).name + '】接入主舰通讯，将于第 ' + (g.round + 1) + ' 轮加入行动顺序', 'sys'); }
 }
-const newRound = r => { const g = r.game; g.turn = 0; g.round++; if (r.main) { g.joined = {}; mainReorder(r); } else if (g.base) { g.order = g.base.filter(x => g.order.includes(x)); g.base = null; } Object.keys(g.mad).forEach(x => { if (--g.mad[x].left <= 0) { delete g.mad[x]; mSet(r, x, 'sane', true); gameLog(r, '【' + memberInfo(r, x).name + '】的疯狂症状消退', 'sys'); } }); };
+const newRound = r => { const g = r.game; g.turn = 0; g.round++; if (r.main || r.w6) { g.joined = {}; mainReorder(r); } else if (g.base) { g.order = g.base.filter(x => g.order.includes(x)); g.base = null; } Object.keys(g.mad).forEach(x => { if (--g.mad[x].left <= 0) { delete g.mad[x]; mSet(r, x, 'sane', true); gameLog(r, '【' + memberInfo(r, x).name + '】的疯狂症状消退', 'sys'); } }); };
 const isDead = (r, x) => !!((r.game.dead || {})[x]);
 const skipNow = (r, x) => isDead(r, x) || ((r.game.skip || {})[x] === r.game.round);
 const stepTurn = r => { const g = r.game; g.turn++; if (g.turn >= g.order.length) newRound(r); for (let n = 0; n < g.order.length && skipNow(r, g.order[g.turn]); n++) { const x = g.order[g.turn]; if (!isDead(r, x)) gameLog(r, '【' + memberInfo(r, x).name + '】已参与协同检定，跳过本回合', 'sys'); g.turn++; if (g.turn >= g.order.length) newRound(r); } };
@@ -1052,7 +1054,7 @@ api.post('/field/rooms/:id/act', auth, once, (req, res) => {
     gameLog(r, '【' + info.name + '】' + on + '进行【' + label + '】检定\nD100=' + roll + '/' + val + ' ' + lv, 'roll', lv);
     return res.json({ room: fieldOut(req.params.id) });
   }
-  if (r.w4) {
+  if (r.w4 && !r.w6) {
     const info = memberInfo(r, me), target = str(b.target, 24), on = target ? '对【' + target + '】' : '', item = str(b.item, 30);
     const wornSuit = item === '宇航服' && !!w4Of(r).suit[me];
     if (item && !wornSuit && ![...(r.members[me].items || []), ...((g.loot || {})[me] || [])].includes(item)) return bad(res, '物品不在背包中');
@@ -1097,11 +1099,11 @@ api.post('/field/rooms/:id/act', auth, once, (req, res) => {
     w4Scan(r); mainSave(r); return res.json({ room: fieldOut(req.params.id) });
   }
   if (!g.free && g.order[g.turn] !== me) return bad(res, '还没轮到你', 409);
-  if ((g.free || r.main) && !(r.gm && Date.now() - r.gm.t < 30000)) return bad(res, '当前没有调度员在线，暂时无法申请行动', 409);
+  if ((g.free || r.main || r.w6) && !(r.gm && Date.now() - r.gm.t < 30000)) return bad(res, '当前没有调度员在线，暂时无法申请行动', 409);
   if (g.state !== 'act') return bad(res, '已有待处理的申请', 409);
   const target = str(b.target, 24), info = memberInfo(r, me), item = str(b.item, 30);
   if (item && ![...(r.members[me].items || []), ...((g.loot || {})[me] || [])].includes(item)) return bad(res, '物品不在背包中');
-  if (b.kind === 'skill') { const lab0 = (SKILL_LABELS[b.cat] || [])[+b.idx], dv = defOf(shipGet(), 'sc' + req.params.id); if (lab0 === '物质解析' && !dv.ana) return bad(res, '物质解析器械已损坏，无法使用该技能', 409); if (lab0 === '医学治疗' && !dv.med) return bad(res, '医疗器械已损坏，无法使用该技能', 409); }
+  if (b.kind === 'skill' && !r.w4) { const lab0 = (SKILL_LABELS[b.cat] || [])[+b.idx], dv = defOf(shipGet(), 'sc' + req.params.id); if (lab0 === '物质解析' && !dv.ana) return bad(res, '物质解析器械已损坏，无法使用该技能', 409); if (lab0 === '医学治疗' && !dv.med) return bad(res, '医疗器械已损坏，无法使用该技能', 409); }
   if (b.kind === 'skill') { const L = SKILL_LABELS[b.cat], i = +b.idx; if (!L || !(i >= 0 && i < 3)) return bad(res, '无效技能'); const grp = (info.skills || []).find(x => x.cat === b.cat); g.pending = { uid: me, name: info.name, kind: 'skill', label: L[i], val: grp ? +grp.v[i] : 1, target, item }; }
   else if (b.kind === 'stat') { const S = STAT_KEYS.find(x => x[1] === b.key); if (!S) return bad(res, '无效属性'); g.pending = { uid: me, name: info.name, kind: 'skill', label: S[0], val: +((info.stats || {})[b.key]) || 0, target, item }; }
   else if (b.kind === 'free') { if (!target && !item) return bad(res, '请填写目标或选择物品'); g.pending = { uid: me, name: info.name, kind: 'free', target, item }; }
