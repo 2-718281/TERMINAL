@@ -672,10 +672,37 @@ function w4Join(r, x) { const g = r.game, m = r.members[x]; if (!g || !m || !m.i
 function w6Join(r, x) { const g = r.game, m = r.members[x]; if (!g || !m || !m.itemsDone || m.away || isDead(r, x) || g.order.includes(x)) return; const live = g.order.some(y => r.members[y] && !r.members[y].away && !isDead(r, y)); g.order.push(x); if (!live) { g.turn = g.order.length - 1; g.pending = null; g.state = 'act'; gameTurnLog(r); } }
 function w4Start(r) {
   const ids = Object.keys(r.members), hp = {}; ids.forEach(x => { const st = memberInfo(r, x).stats || {}; hp[x] = Math.floor(((+st.siz || 0) + (+st.con || 0)) / 10); });
-  r.game = { order: ids.filter(x => !r.members[x].away), turn: 0, round: 1, free: !r.w6, state: 'act', pending: null, log: [], seq: 0, hp, mad: {}, pendMad: {}, hurt: {}, hit: {} };
-  if (r.w6) { const g = r.game; g.order = g.order.map(x => ({ x, dex: +((memberInfo(r, x).stats || {}).dex) || 0, k: Math.random() })).sort((a, c) => c.dex - a.dex || a.k - c.k).map(o => o.x); if (g.order.length) gameLog(r, '行动顺序：' + g.order.map(x => memberInfo(r, x).name).join(' → '), 'sys'); gameTurnLog(r); }
+  r.game = { order: ids.filter(x => !r.members[x].away), turn: 0, round: 1, free: true, state: 'act', pending: null, log: [], seq: 0, hp, mad: {}, pendMad: {}, hurt: {}, hit: {} };
+  if (r.w6) r.game.w6 = { seq: 0, reqs: [], dm: {} };
   if (!r.w5) try { const sh = shipGet(), opts = ['airlock', 'rcs', 'lab', 'dock', 'farm', 'med', 'hab1', 'hab2', 'truss'].filter(m => !(sh.lost || []).includes(m) && !(sh.broken || []).includes(m)), mv = db.prepare("select id from users where loc = 'cockpit'").all(); if (opts.length) mv.forEach(u => db.prepare('update users set loc = ? where id = ?').run(opts[crypto.randomInt(0, opts.length)], u.id)); } catch (e) { logError('w4', 'cockpitClear', e); }
 }
+// 舱室搜索物件：{ 舱室id: [{ n: 名称, d: 描述, once: true=全舰只有一份 }] }（待填写）
+const W6_SEARCH = { cockpit: [], airlock: [], rcs: [], lab: [], dock: [], farm: [], med: [], hab1: [], hab2: [], truss: [] };
+const W6_TAPE = '你找到了一段实验录像，最新一段的时间戳已经损坏。\n\n画面是一段实验记录：一名蓝发女子刚结束实验，撑着桌子一言不发，画面就这样持续了一阵。背景音里传来一个女声，在呼唤着某个名字。\n\n女子惊叫一声，向后退去，肩膀发抖，目光却一动不动地盯着画面外的某处，手臂向前伸着——退缩与渴望交织在同一副神情里。\n\n背景里的女声还在说话，内容听不清。她朝声音的方向跑去，一路跌跌撞撞，撞翻了不少实验器具；经过摄像机时，衣摆把摄像机也带倒了。画面一阵摇晃，落在桌面上，颠倒着映出女子紧紧抱住一个红发身影的景象。\n\n随后画面变成乱码。摄像机已经损坏，无法继续放映。', W6_TAPE1 = '你反复听着背景音里的呼唤——那个女声在喊：「北柏」。', W6_TAPE2 = '录像带似乎残留着某种加密痕迹，虽然不知为何已经失效，但你从中提取出了一串代码：f421112666';
+const W6RT = { U: 2.4, P: [-36.23, 12.95], tol: 2, H: 100, DV: 2.97 };
+function w6RtSim(phi, rp, dv, thr) { const RT = W6RT; { const MU = 30 / 9, KS = 1 / 3, acc = (x, y) => { const r = Math.hypot(x, y), f = -MU / (r * r * r); return [f * x, f * y]; }, step = (s, dt) => { const [x, y, vx, vy] = s, a1 = acc(x, y), k1 = [vx, vy, a1[0], a1[1]], a2 = acc(x + k1[0] * dt / 2, y + k1[1] * dt / 2), k2 = [vx + k1[2] * dt / 2, vy + k1[3] * dt / 2, a2[0], a2[1]], a3 = acc(x + k2[0] * dt / 2, y + k2[1] * dt / 2), k3 = [vx + k2[2] * dt / 2, vy + k2[3] * dt / 2, a3[0], a3[1]], a4 = acc(x + k3[0] * dt, y + k3[1] * dt), k4 = [vx + k3[2] * dt, vy + k3[3] * dt, a4[0], a4[1]]; return s.map((v, i) => v + dt / 6 * (k1[i] + 2 * k2[i] + 2 * k3[i] + k4[i])); };
+    const T = 2 * Math.PI * Math.sqrt(8 / MU), w = 2 * Math.PI / T, ph = phi * Math.PI / 180, U = RT.U, vc = Math.sqrt(MU / 2), eff = 1 + Math.abs((thr == null ? 72 : thr) - 72) / 100 * 0.35; let t = ((ph - Math.PI / 2) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) / w, st = [2 * Math.cos(ph), 2 * Math.sin(ph), -vc * Math.sin(ph), vc * Math.cos(ph)], used = 0, crash = false, n = 0; const pts = [], push = () => { if (n++ % 3 === 0) pts.push([t, st[0] + U * KS * t, st[1]]); };
+    const run = until => { while (t < until) { const r = Math.hypot(st[0], st[1]); if (r < 1) return false; const dt = Math.min(0.25, Math.max(0.004, 0.015 * Math.pow(r, 1.5)), until - t); st = step(st, dt); t += dt; push(); } return true; };
+    push(); if (rp < 1.999) { const a = (2 + rp) / 2, va = Math.sqrt(MU * (1 - 1 / a)); used += (vc - va) / KS * eff; st[2] *= va / vc; st[3] *= va / vc; crash = !run(t + Math.PI * Math.sqrt(a * a * a / MU)); }
+    const b2 = Math.max(0, Math.min(dv, RT.DV - used)); if (!crash) { const v = Math.hypot(st[2], st[3]), k = (v + b2 / eff * KS) / v; st[2] *= k; st[3] *= k; used += b2; crash = !run(RT.H); } pts.push([t, st[0] + U * KS * t, st[1]]);
+    let best = 1e9, bi = 0; pts.forEach((p, i) => { const d = Math.hypot(p[1] - RT.P[0], p[2] - RT.P[1]); if (d < best) { best = d; bi = i; } }); const bound = !crash && Math.hypot(st[0], st[1]) < 8, pa = pts[Math.max(0, bi - 1)], pb = pts[Math.min(pts.length - 1, bi + 1)], tb = pts[bi] ? pts[bi][0] : 0, vb = pb && pa && pb[0] > pa[0] ? Math.hypot(pb[1] - pa[1], pb[2] - pa[2]) / (pb[0] - pa[0]) * 3 : 0;
+    return { pts, used, crash, bound, best, tb, vb, hit: !crash && best < RT.tol }; } }
+function w6Crit(r, x, lv) { if (lv !== '大失败' || !r.w6 || !r.game || !x) return; const g = r.game; g.mad = g.mad || {}; if (g.mad[x]) return; const t = crypto.randomInt(1, 11), dur = crypto.randomInt(1, 11); mSet(r, x, 'sane', false); delete (g.pendMad || {})[x]; g.mad[x] = { no: t, type: madPick(t), left: dur, until: Date.now() + dur * 60000 }; madInit(r, x); gameLog(r, '【' + memberInfo(r, x).name + '】大失败 · 陷入临时疯狂 · 1d10=' + t + '【' + g.mad[x].type + '】（持续 ' + dur + ' 分钟）', 'mad'); }
+function w6NavTick(r) { if (!r.w6 || !r.started || !r.game) return; const W = w6Of(r); if (!(W.open || {}).nav) return; const NV = W.nav6 = W.nav6 || {}; if (NV.on === false) return; const now = Date.now(); if (!NV.l0) NV.l0 = now; if (!NV.l1) NV.l1 = now; const fx = r.game.fx = r.game.fx || {};
+  if (!NV.warn && now - NV.l0 >= (NV.gap || 15) * 60e3) { NV.warn = now + 180e3; fx.alarm = true; gameLog(r, '【广播】：' + w5T('navWarn'), 'gm', 'bc'); } else if (NV.warn && now >= NV.warn) { w5NavHit(r); NV.warn = 0; NV.l0 = NV.l1 = now; } }
+function w6MadTick(r) { const g = r.game; if (!r.w6 || !g || !g.mad) return; const now = Date.now(); Object.keys(g.mad).forEach(x => { const m = g.mad[x]; if (m && m.until && m.until < now) { delete g.mad[x]; mSet(r, x, 'sane', true); gameLog(r, '【' + memberInfo(r, x).name + '】从临时疯狂中恢复了过来', 'mad'); } }); }
+const W6_NAVEND = 22000, W6_A_OK = '⦚  ∧  ⌒○\n我们 · 需要 · 投信石\n「我们需要沟通。」', W6_GL = '⦚∧⌒○◡︿→﹏⊥ㄱ≋⩘⌓⋀▓▒░', W6_GARB = n => Array.from({ length: n }, () => W6_GL[crypto.randomInt(0, W6_GL.length)]).join('');
+function w6AlienDm(r, uid, text) { gameLog(r, '？？？向你发来了一条私信 · 点页眉「我的申请 / 私信」查看', 'sys', '', { to: uid, w6a: 1 }); const W = w6Of(r); W.seq++; const L = W.dm[uid] = W.dm[uid] || []; L.push({ id: W.seq, t: Date.now(), by: '???', gm: true, alien: true, name: '？？？', as: 'narr', text, rid: 0 }); if (L.length > 200) L.shift(); }
+function w6AlienCheck(r, x) { if (!r.w6 || !r.started || !r.game || !r.members[x] || isAdmin(x) || (r.game.dead || {})[x]) return; const W = w6Of(r), A = W.alien = W.alien || {}; if (A[x]) return; const i = mGet(r, x); if (!i) return; const er = +i.er || 0;
+  if (er > 80) { A[x] = { tier: 'hi', t: Date.now() }; gameLog(r, '你感到一股想要和什么沟通的强烈冲动。', 'sys', '', { to: x, w6a: 1 }); }
+  else if (er >= 60) { A[x] = { tier: 'mid', t: Date.now() }; gameLog(r, W6_GARB(36), 'sys', '', { to: x, w6a: 2 }); } }
+const W6_ER5 = (r, x) => { const i = mGet(r, x); if (i) mSet(r, x, 'er', Math.min(100, (+i.er || 0) + 5)); };
+const W6_TAG = { 'DA-0409': 'log', 'DA-0042': 'res', 'DA-1978': 'pilot' };
+const w6Of = r => { const g = r.game; return g.w6 = g.w6 || { seq: 0, reqs: [], dm: {} }; };
+const w6Gms = r => { const now = Date.now(), G = r.gms || {}; return Object.keys(G).filter(x => now - G[x] < 30000).map(x => ({ id: x, name: dispLabel(x) || x, as: W6_TAG[x] || 'narr' })); };
+function w6Dm(r, uid, by, text, rid) { const W = w6Of(r), gm = isAdmin(by); W.seq++; const L = W.dm[uid] = W.dm[uid] || []; L.push({ id: W.seq, t: Date.now(), by, gm, name: gm ? dispLabel(by) || by : memberInfo(r, by).name, as: W6_TAG[by] || 'narr', text, rid: rid || 0 }); if (L.length > 200) L.shift(); }
+function w6Roll(val, b) { b = b || {}; const bo = Math.max(0, Math.min(2, +b.bonus || 0)), pe = Math.max(0, Math.min(2, +b.penalty || 0)), need = ['常规', '困难', '极难'].includes(b.need) ? b.need : '常规', net = bo - pe, u = crypto.randomInt(0, 10), ts = Array.from({ length: 1 + Math.abs(net) }, () => crypto.randomInt(0, 10)), vals = ts.map(t => (t * 10 + u) || 100), roll = net > 0 ? Math.min(...vals) : net < 0 ? Math.max(...vals) : vals[0], lv = rollLevel(roll, val), RK = { '大失败': 0, '失败': 1, '常规成功': 2, '困难成功': 3, '极难成功': 4, '大成功': 5 }, met = RK[lv] >= { '常规': 2, '困难': 3, '极难': 4 }[need]; return { lv, need, met, expr: net === 0 ? 'D100=' + roll : (net > 0 ? 'b' : 'p') + Math.abs(net) + '=D100=' + vals[0] + ', [' + (net > 0 ? '奖励骰' : '惩罚骰') + ':' + ts.slice(1).join(',') + '] = ' + roll, tail: need !== '常规' ? (met ? '（达成）' : '（未达成）') : '' }; }
+function w6Out(r) { const W = w6Of(r), v = CUR_VIEWER, adm = !!v && isAdmin(v), Q = W.quiz; return { round: r.game.round, gms: w6Gms(r), show: W.show || null, navAt: W.navAt || 0, fuelAt: W.fuelAt || 0, fuelK: W.fuelK || '', convOk: W.convOk || 0, pshow: W.pshow || null, now: Date.now(), quiz: !Q ? null : adm ? Q : { id: Q.id, on: Q.on, mine: (Q.ans || {})[v] || [], fin: !!(Q.fin || {})[v], key: !!(Q.key || {})[v], wish: (Q.wish || {})[v] != null }, reqs: adm ? W.reqs.slice(-300) : W.reqs.filter(q => q.uid === v).map(q => q.st === 'roll' ? { ...q, st: 'lock', res: '', lv: '', by: '', byName: '', as: '' } : { ...q, by: '', byName: '调度', as: 'narr' }), alien: adm ? (W.alien || {}) : null, alienMine: adm ? null : ((W.alien || {})[v] || null), nav6: (() => { const NV = W.nav6 || {}, now = Date.now(), gp = (NV.gap || 15) * 60e3; return { on: NV.on !== false, gap: NV.gap || 15, warnLeft: NV.warn ? Math.max(0, NV.warn - now) : 0, nextIn: NV.l0 ? Math.max(0, gp - (now - NV.l0)) : gp }; })(), open: W.open || {}, pool: W.pool || [], seqG: adm ? (W.gseq || null) : null, ptry: adm ? (W.ptry || []).slice(-20) : null, part: W.part || null, sent: W.sent || null, decMine: adm ? null : ((W.dec || {})[v] || []), routeSys: W.routeSys || 0, routeOk: W.routeOk || null, rtTry: adm ? (W.rtTry || {}) : null, rtN: adm ? (W.rtN || 0) : 0, rtMine: adm ? null : ((W.rtTry || {})[v] || null), recsMine: adm ? null : ((W.recs || {})[v] || []), tapeOn: !!(W.tape && W.tape.watched), tape: adm ? (W.tape || null) : null, tapeLog: adm ? (W.tapeLog || []) : null, foundMine: adm ? null : Object.fromEntries(Object.entries(((W.found || {})[v]) || {}).map(([k, a]) => [k, a.map(i => W6_SEARCH[k] && W6_SEARCH[k][i]).filter(Boolean)])), dm: adm ? W.dm : { [v]: (W.dm[v] || []).map(m => m.gm && !m.alien ? { ...m, by: '', name: '调度', as: 'narr' } : m) } }; }
 function w4Drop(r, x) { const g = r.game; if (!g) return; const i = g.order.indexOf(x); if (i >= 0) g.order.splice(i, 1); }
 // 娱乐室 · 秘密投票：不计入外勤 / 舰船位置；全员自由检定，无需调度
 const FUN_ID = '9', FUN_MIN = 3, FUN_MAX = 12, FUN_SEC = 300000, FUN_GAP = 6000;
@@ -689,7 +716,7 @@ FIELD[BJ_ID] = mkBJ();
 const mainSaveT = {}, mainKey = r => r.w4 ? 'w4_room' : 'main_log';
 function mainSave(r) { if (r.w4) return w4Save(r); const K = mainKey(r); clearTimeout(mainSaveT[K]); mainSaveT[K] = setTimeout(() => { try { const g = r.game; db.prepare("insert or replace into kv(k, v) values(?, ?)").run(K, JSON.stringify({ all: g.all || [], seq: g.seq || 0, round: g.round || 1, fx: g.fx || {}, w4: g.w4 || null })); } catch (e) {} }, 2000); }
 function w4Save(r) { const K = r.w6 ? 'w6_room' : r.w5 ? 'w5_room' : 'w4_room'; clearTimeout(mainSaveT[K]); mainSaveT[K] = setTimeout(() => { try { const g = r.game; db.prepare("insert or replace into kv(k, v) values(?, ?)").run(K, JSON.stringify({ v: 2, started: !!r.started, members: r.started ? r.members : {}, game: g ? { ...g, log: undefined, lastSay: undefined } : null })); } catch (e) {} }, 2000); }
-function w4Load(id, K) { try { const x = db.prepare("select v from kv where k = ?").get(K); if (!x) return; const d = JSON.parse(x.v); if (d.v !== 2 || !d.started || !d.game) return; const r = FIELD[id]; r.started = true; r.members = d.members || {}; Object.values(r.members).forEach(m => { m.away = true; m.seen = Date.now(); }); r.game = d.game; r.game.all = r.game.all || []; r.game.log = r.game.all.slice(-300); r.game.order = []; r.game.free = !r.w6; r.game.turn = 0; r.game.state = 'act'; r.game.pending = null; } catch (e) {} }
+function w4Load(id, K) { try { const x = db.prepare("select v from kv where k = ?").get(K); if (!x) return; const d = JSON.parse(x.v); if (d.v !== 2 || !d.started || !d.game) return; const r = FIELD[id]; r.started = true; r.members = d.members || {}; Object.values(r.members).forEach(m => { m.away = true; m.seen = Date.now(); }); r.game = d.game; r.game.all = r.game.all || []; r.game.log = r.game.all.slice(-300); r.game.order = []; r.game.free = true; r.game.turn = 0; r.game.state = 'act'; r.game.pending = null; } catch (e) {} }
 function mainLoad() { w4Load(W4_ID, 'w4_room'); w4Load(W5_ID, 'w5_room'); w4Load(W6_ID, 'w6_room'); ['3'].forEach(id => { try { const x = db.prepare("select v from kv where k = ?").get(mainKey(FIELD[id])); if (!x) return; const d = JSON.parse(x.v), g = FIELD[id].game; g.all = Array.isArray(d.all) ? d.all : []; g.log = g.all.slice(-300); g.seq = +d.seq || (g.all.length ? g.all[g.all.length - 1].id : 0); g.round = +d.round || 1; g.fx = d.fx || {}; if (FIELD[id].w4) { g.free = true; g.state = 'act'; g.pending = null; if (d.w4) g.w4 = d.w4; } } catch (e) {} }); }
 function mainClear(r) { if (r.w4) { const K = r.w6 ? 'w6_room' : r.w5 ? 'w5_room' : 'w4_room'; clearTimeout(mainSaveT[K]); try { db.prepare("delete from kv where k = ?").run(K); } catch (e) {} return; } const K = mainKey(r); clearTimeout(mainSaveT[K]); try { db.prepare("delete from kv where k = ?").run(K); } catch (e) {} }
 const FIELD_BOTS = [];
@@ -702,7 +729,7 @@ Object.keys(FIELD).forEach(fieldBots);
 function fieldRoom(id) {
   const r = FIELD[id]; if (!r) return null; const now = Date.now();
   if (r.fun) return funRoom(id, r, now);
-  if (r.w4 && r.started) { const DROP = r.w6 ? mainDrop : w4Drop, JOIN = r.w6 ? w6Join : w4Join; Object.keys(r.members).forEach(x => { const m = r.members[x], idle = now - m.seen; if (idle > 6 * 3600e3) { delete r.members[x]; DROP(r, x); } else if (idle > 60000 && !m.away) { m.away = true; DROP(r, x); } }); r.game.order.filter(x => !r.members[x] || isDead(r, x)).forEach(x => DROP(r, x)); Object.keys(r.members).forEach(x => JOIN(r, x)); return r; }
+  if (r.w4 && r.started) { const DROP = w4Drop, JOIN = w4Join; Object.keys(r.members).forEach(x => { const m = r.members[x], idle = now - m.seen; if (idle > 6 * 3600e3) { delete r.members[x]; DROP(r, x); } else if (idle > 60000 && !m.away) { m.away = true; DROP(r, x); } }); r.game.order.filter(x => !r.members[x] || isDead(r, x)).forEach(x => DROP(r, x)); Object.keys(r.members).forEach(x => JOIN(r, x)); return r; }
   if (r.main) { Object.keys(r.members).forEach(x => { const m = r.members[x], idle = now - m.seen; if (idle > 6 * 3600e3) { delete r.members[x]; mainDrop(r, x); } else if (idle > 60000 && !m.away) { m.away = true; mainDrop(r, x); } }); r.game.order.filter(x => !r.members[x]).forEach(x => mainDrop(r, x)); return r; }
   Object.keys(r.members).forEach(x => { if (!r.started && !r.members[x].bot && now - r.members[x].seen > 20000) delete r.members[x]; });
   if (!Object.keys(r.members).length) r.started = false;
@@ -733,7 +760,7 @@ function mainJoin(r, x) {
   if (!g.order.some(y => r.members[y] && !r.members[y].away && !isDead(r, y))) { g.pending = null; g.state = 'act'; newRound(r); gameTurnLog(r); return; }
   if (!(g.joined = g.joined || {})[x]) { g.joined[x] = g.round; gameLog(r, '【' + memberInfo(r, x).name + '】接入主舰通讯，将于第 ' + (g.round + 1) + ' 轮加入行动顺序', 'sys'); }
 }
-const newRound = r => { const g = r.game; g.turn = 0; g.round++; if (r.main || r.w6) { g.joined = {}; mainReorder(r); } else if (g.base) { g.order = g.base.filter(x => g.order.includes(x)); g.base = null; } Object.keys(g.mad).forEach(x => { if (--g.mad[x].left <= 0) { delete g.mad[x]; mSet(r, x, 'sane', true); gameLog(r, '【' + memberInfo(r, x).name + '】的疯狂症状消退', 'sys'); } }); };
+const newRound = r => { const g = r.game; g.turn = 0; g.round++; if (r.main) { g.joined = {}; mainReorder(r); } else if (g.base) { g.order = g.base.filter(x => g.order.includes(x)); g.base = null; } Object.keys(g.mad).forEach(x => { if (--g.mad[x].left <= 0) { delete g.mad[x]; mSet(r, x, 'sane', true); gameLog(r, '【' + memberInfo(r, x).name + '】的疯狂症状消退', 'sys'); } }); };
 const isDead = (r, x) => !!((r.game.dead || {})[x]);
 const skipNow = (r, x) => isDead(r, x) || ((r.game.skip || {})[x] === r.game.round);
 const stepTurn = r => { const g = r.game; g.turn++; if (g.turn >= g.order.length) newRound(r); for (let n = 0; n < g.order.length && skipNow(r, g.order[g.turn]); n++) { const x = g.order[g.turn]; if (!isDead(r, x)) gameLog(r, '【' + memberInfo(r, x).name + '】已参与协同检定，跳过本回合', 'sys'); g.turn++; if (g.turn >= g.order.length) newRound(r); } };
@@ -891,11 +918,11 @@ function funOut(r, me) {
     rounds: (V.end ? V.rounds : []).map(x => { const open = x.shown || V.end; return { no: x.no, text: x.text, N: x.N, k: x.k, out: x.out, answerName: open ? funName(x.author) : '', rows: Object.keys(x.rec).map(u => { const e = x.rec[u]; return { uid: u, name: funName(u), role: !open && e.role === 'author' ? 'guess' : e.role, vote: e.vote, vname: e.vote ? funName(e.vote) : '', ok: e.ok, res: e.res }; }) }; }),
     cur: c ? { no: c.no, text: c.text, t1: c.t1, mine: c.votes[me] || '', isMine: c.author === me, votes: Object.keys(c.votes).map(x => ({ uid: x, name: funName(x), target: c.votes[x], tname: funName(c.votes[x]) })) } : null };
 }
-function gameOut(r) { const g = r.game; if (!g) return null; return { mapSeq: (g.map && g.map.seq) || 0, dogUsed: !!g.dogUsed, free: !!g.free, round: g.round, turnId: g.free ? '' : (g.order[g.turn] || ''), order: g.order.map(x => { const i = memberInfo(r, x); return { id: x, name: i.name, dex: +((i.stats || {}).dex) || 0 }; }), state: g.state, pending: g.pending, skip: g.skip || {}, dropped: g.dropped || [], fx: g.fx || {}, dead: g.dead || {}, w4: r.w4 ? (r.w5 ? { ...w4Out(r), ...w5Out(r) } : w4Out(r)) : null, log: (CUR_VIEWER && isAdmin(CUR_VIEWER) && !r.fun ? g.log : g.log.filter(l => !l.hide && (!l.to || (CUR_VIEWER && l.to === CUR_VIEWER)) && (!l.vis || (CUR_VIEWER && l.vis.includes(CUR_VIEWER))))).slice(-150) }; }
+function gameOut(r) { const g = r.game; if (!g) return null; return { mapSeq: (g.map && g.map.seq) || 0, dogUsed: !!g.dogUsed, free: !!g.free, round: g.round, turnId: g.free ? '' : (g.order[g.turn] || ''), order: g.order.map(x => { const i = memberInfo(r, x); return { id: x, name: i.name, dex: +((i.stats || {}).dex) || 0 }; }), state: g.state, pending: g.pending, w6: r.w6 ? w6Out(r) : null, skip: g.skip || {}, dropped: g.dropped || [], fx: g.fx || {}, dead: g.dead || {}, w4: r.w4 ? (r.w5 ? { ...w4Out(r), ...w5Out(r) } : w4Out(r)) : null, log: (CUR_VIEWER && isAdmin(CUR_VIEWER) && !r.fun ? g.log : g.log.filter(l => !l.hide && (!l.to || (CUR_VIEWER && l.to === CUR_VIEWER)) && (!l.vis || (CUR_VIEWER && l.vis.includes(CUR_VIEWER))))).slice(-150) }; }
 function fieldOut(id, full) {
   const r = fieldRoom(id);
   const now = Date.now();
-  return { id: +id, max: r.main || r.w4 || r.fun ? 0 : 8, main: !!r.main, w5: !!r.w5, w6: !!r.w6, seeFoam: r.main ? (() => { const v = CUR_VIEWER; if (!v) return false; if (isAdmin(v)) return true; const u = getUser(v); return !!u && (u.dead === 2 || (+((mGet(r, v) || {}).er) || 0) >= 60); })() : true, w4: !!r.w4, fun: !!r.fun, cd: r.fun && r.cd ? Math.max(0, r.cd - now) : 0, vote: r.fun && !r.liar ? funOut(r, CUR_VIEWER) : null, liarMode: !!r.liar, lz: r.liar ? LZ.out(r, CUR_VIEWER) : null, bjMode: !!r.bj, bj: r.bj ? BJ.out(r, CUR_VIEWER, now) : null, started: r.started, dispatcher: r.gm && ((r.started && !r.main) || now - r.gm.t < 30000) ? dispLabel(r.gm.id) || r.gm.id : '', members: Object.keys(r.members).filter(x => !(r.main && r.members[x].away)).map(x => {
+  return { id: +id, max: r.main || r.w4 || r.fun ? 0 : 8, main: !!r.main, w5: !!r.w5, w6: !!r.w6, seeFoam: r.main ? (() => { const v = CUR_VIEWER; if (!v) return false; if (isAdmin(v)) return true; const u = getUser(v); return !!u && (u.dead === 2 || (+((mGet(r, v) || {}).er) || 0) >= 60); })() : true, w4: !!r.w4, fun: !!r.fun, cd: r.fun && r.cd ? Math.max(0, r.cd - now) : 0, vote: r.fun && !r.liar ? funOut(r, CUR_VIEWER) : null, liarMode: !!r.liar, lz: r.liar ? LZ.out(r, CUR_VIEWER) : null, bjMode: !!r.bj, bj: r.bj ? BJ.out(r, CUR_VIEWER, now) : null, started: r.started, dispatcher: r.w6 && w6Gms(r).length ? w6Gms(r).map(x => x.name).join(' / ') : r.gm && ((r.started && !r.main) || now - r.gm.t < 30000) ? dispLabel(r.gm.id) || r.gm.id : '', members: Object.keys(r.members).filter(x => !(r.main && r.members[x].away)).map(x => {
     const m = r.members[x], b = m.bot, u = b ? null : getUser(x);
     const mi = mGet(r, x) || {}, gg = r.game || {};
     const o = { id: x, hp: hpNow(mi), hpMax: hpMaxOf(mi.stats), mad: (gg.mad || {})[x] || null, hit: (gg.hit || {})[x] || 0, loot: (gg.loot || {})[x] || [], name: b ? b.name : realName(x, u && u.name), avatar: u ? u.avatar || '' : '', ready: !!m.ready, itemsDone: !!m.itemsDone, items: m.items || [], temps: m.temps || [], lootCarry: m.lootCarry || [], bot: !!b, dispName: dispLabel(x), sane: b ? b.sane !== false : !!u && u.sane !== 0, stats: b ? b.stats : u ? statsOf(u) : null, skills: b ? b.skills : u ? skillsOf(u) : null, dept: b ? b.dept : u ? u.dept || '' : '', idCard: u ? u.idcard || '' : '', secret: r.fun && !r.started && x === CUR_VIEWER ? (r.secrets || {})[x] || '' : '' };
@@ -931,14 +958,16 @@ api.post('/field/skills', auth, (req, res) => {
 });
 api.get('/field/mine', auth, (req, res) => {
   const me = req.user.id; let member = 0, started = false, gmRoom = 0;
-  Object.keys(FIELD).forEach(id => { if (FIELD[id].fun) return; const r = fieldRoom(id); if (r.members[me]) { member = +id; started = r.started; } if (r.started && r.gm && r.gm.id === me && !r.members[me] && Date.now() - r.gm.t < 30000) gmRoom = +id; });
+  Object.keys(FIELD).forEach(id => { if (FIELD[id].fun) return; const r = fieldRoom(id); if (r.members[me]) { member = +id; started = r.started; } if (r.started && !r.members[me] && ((r.gm && r.gm.id === me && Date.now() - r.gm.t < 30000) || (r.w6 && Date.now() - ((r.gms || {})[me] || 0) < 30000))) gmRoom = +id; });
   res.json({ member, started, gmRoom });
 });
 api.get('/field/rooms', auth, (req, res) => res.json({ max: 8, rooms: Object.keys(FIELD).filter(id => !FIELD[id].fun).map(id => { const r = fieldRoom(id); return { id: +id, n: Object.keys(r.members).length, started: r.started, main: !!r.main, w4: !!r.w4, w5: !!r.w5, w6: !!r.w6, lost: shipGet().lost.includes('sc' + id) }; }) }));
 api.get('/field/rooms/:id', auth, (req, res) => {
   const r = fieldRoom(req.params.id); if (!r) return bad(res, '无效舰船', 404);
+  if (r.w6) { w6AlienCheck(r, req.user.id); w6MadTick(r); w6NavTick(r); }
   { const m = r.members[req.user.id]; if (m) { m.seen = Date.now(); if (r.main && m.away && !req.query.gm) { m.away = false; mainJoin(r, req.user.id); } if (r.w4 && m.away && !req.query.gm) { m.away = false; w4Join(r, req.user.id); } } }
-  if (isAdmin(req.user.id) && req.query.gm) { if (r.gm && r.gm.id !== req.user.id && Date.now() - r.gm.t < 30000) return bad(res, '该舰已有调度【' + (dispLabel(r.gm.id) || r.gm.id) + '】在线，一艘舰只能有一位调度', 409); r.gm = { id: req.user.id, t: Date.now() }; }
+  if (isAdmin(req.user.id) && req.query.gm && r.w6) { r.gm = { id: req.user.id, t: Date.now() }; (r.gms = r.gms || {})[req.user.id] = Date.now(); }
+  else if (isAdmin(req.user.id) && req.query.gm) { if (r.gm && r.gm.id !== req.user.id && Date.now() - r.gm.t < 30000) return bad(res, '该舰已有调度【' + (dispLabel(r.gm.id) || r.gm.id) + '】在线，一艘舰只能有一位调度', 409); r.gm = { id: req.user.id, t: Date.now() }; }
   res.json({ room: fieldOut(req.params.id, isAdmin(req.user.id)) });
 });
 const NONCES = new Map();
@@ -962,7 +991,7 @@ api.post('/field/rooms/:id/map', auth, (req, res) => {
   const since = Math.floor(+b.since || 0);
   res.json(since < M.base || since > M.seq ? { seq: M.seq, reset: true, ops: M.ops } : { seq: M.seq, ops: M.ops.filter(o => o.seq > since) });
 });
-api.post('/field/rooms/:id/ungm', auth, admin, (req, res) => { const r = fieldRoom(req.params.id); if (r && r.gm && r.gm.id === req.user.id) delete r.gm; res.json({ ok: true }); });
+api.post('/field/rooms/:id/ungm', auth, admin, (req, res) => { const r = fieldRoom(req.params.id); if (r && r.gm && r.gm.id === req.user.id) delete r.gm; if (r && r.gms) delete r.gms[req.user.id]; res.json({ ok: true }); });
 api.post('/field/rooms/:id/join', auth, (req, res) => {
   const id = req.params.id, r = fieldRoom(id), me = req.user.id; if (!r) return bad(res, '无效舰船', 404);
   if (!r.main && !r.w4 && shipGet().lost.includes('sc' + id)) return bad(res, '该先锋舰已失联，无法进入', 409);
@@ -1098,6 +1127,34 @@ api.post('/field/rooms/:id/act', auth, once, (req, res) => {
     if (r.w5) w5Tick(r);
     w4Scan(r); mainSave(r); return res.json({ room: fieldOut(req.params.id) });
   }
+  if (r.w6 && str(b.target, 24) === '录像带' && (w6Of(r).tape || {}).watched && ((b.kind === 'skill' && b.cat === 'scan' && +b.idx === 2) || (b.kind === 'skill' && b.cat === 'res' && +b.idx === 0))) {
+    const W = w6Of(r), info = memberInfo(r, me), cat = b.cat, si = +b.idx, grp = (info.skills || []).find(x => x.cat === cat), v = grp ? +grp.v[si] : 1, R = w6Roll(v, {}), lv = R.met ? R.lv : R.lv === '大失败' ? '大失败' : '未达成', lab = SKILL_LABELS[cat][si];
+    gameLog(r, '【' + info.name + '】对【录像带】进行【' + lab + '】检定\n' + R.expr + '/' + v + ' ' + R.lv, 'roll', lv); w6Crit(r, me, R.lv);
+    if (cat === 'scan') gameLog(r, R.met ? W6_TAPE1 : '录像带里的杂音太重，你没能听清。', 'sys', '', { to: me });
+    else gameLog(r, ['极难成功', '大成功'].includes(R.lv) ? W6_TAPE2 : '你没能从录像带中解析出有用的信息。', 'sys', '', { to: me });
+    (W.tapeLog = W.tapeLog || []).push({ uid: me, lab, lv: R.lv, t: Date.now() }); mainSave(r); return res.json({ room: fieldOut(req.params.id) });
+  }
+  if (r.w6 && str(b.target, 24) === '？？？') {
+    const W = w6Of(r), A = (W.alien || {})[me]; if (!A) return bad(res, '没有这个对象', 409); if (A.done) return bad(res, '？？？没有回应', 409);
+    const info = memberInfo(r, me), pow = +((info.stats || {}).pow) || 0, lg = (lab, v, R) => { gameLog(r, '【' + info.name + '】对？？？进行【' + lab + '】检定\n' + R.expr + '/' + v + ' ' + R.lv, 'roll', R.met ? R.lv : R.lv === '大失败' ? '大失败' : '未达成', { to: me, w6a: 1 }); w6Crit(r, me, R.lv); };
+    if (A.tier === 'hi') { if (!(b.kind === 'stat' && b.key === 'pow')) return bad(res, '需要使用【意志】'); const R = w6Roll(pow, {}); lg('意志', pow, R); if (!R.met) W6_ER5(r, me); w6AlienDm(r, me, W6_A_OK); Object.assign(A, { done: Date.now(), task: true, will: R.met }); }
+    else { if (!(b.kind === 'skill' && b.cat === 'res' && +b.idx === 2)) return bad(res, '需要使用【' + SKILL_LABELS.res[2] + '】'); const grp = (info.skills || []).find(x => x.cat === 'res'), v = grp ? +grp.v[2] : 1, R = w6Roll(v, {}); lg(SKILL_LABELS.res[2], v, R); const R2 = w6Roll(pow, {}); lg('意志', pow, R2); if (!R2.met) W6_ER5(r, me); w6AlienDm(r, me, R.met ? W6_A_OK : W6_GARB(18)); Object.assign(A, { done: Date.now(), task: R.met, ci: R.met, will: R2.met }); }
+    mainSave(r); return res.json({ room: fieldOut(req.params.id) });
+  }
+  if (r.w6) {
+    if (!w6Gms(r).length && !(r.gm && Date.now() - r.gm.t < 30000)) return bad(res, '当前没有调度员在线，暂时无法申请行动', 409);
+    const W = w6Of(r), text = str(b.text, 300), target = str(b.target, 24), item = str(b.item, 30), info = memberInfo(r, me);
+    if (!text) return bad(res, '请写下这次行动的 RP');
+    if (W.reqs.some(q => q.uid === me && (q.st === 'wait' || q.st === 'roll'))) return bad(res, '你已有待处理的申请', 409);
+    const wbUse = target === '工作台' && Array.isArray(b.use) ? b.use.map(x => str(x, 30)).filter(x => (W.pool || []).some(p => p.n === x)).slice(0, 6) : [];
+    if (target !== '工作台' && item && ![...(r.members[me].items || []), ...((g.loot || {})[me] || [])].includes(item)) return bad(res, '物品不在背包中');
+    let q;
+    if (b.kind === 'skill') { const L = SKILL_LABELS[b.cat], i = +b.idx; if (!L || !(i >= 0 && i < 3)) return bad(res, '无效技能'); const grp = (info.skills || []).find(x => x.cat === b.cat); q = { kind: 'skill', label: L[i], val: grp ? +grp.v[i] : 1 }; }
+    else if (b.kind === 'stat') { const S = STAT_KEYS.find(x => x[1] === b.key); if (!S) return bad(res, '无效属性'); q = { kind: 'skill', label: S[0], val: +((info.stats || {})[b.key]) || 0 }; }
+    else q = { kind: 'free', label: '', val: 0 };
+    W.seq++; W.reqs.push({ id: W.seq, uid: me, name: info.name, ...q, target, item: wbUse.length ? wbUse.join('、') : target === '工作台' ? '' : item, text, loc: baseLoc(getUser(me)), t: Date.now(), round: g.round, st: 'wait' }); if (W.reqs.length > 600) W.reqs.shift();
+    mainSave(r); return res.json({ room: fieldOut(req.params.id) });
+  }
   if (!g.free && g.order[g.turn] !== me) return bad(res, '还没轮到你', 409);
   if ((g.free || r.main || r.w6) && !(r.gm && Date.now() - r.gm.t < 30000)) return bad(res, '当前没有调度员在线，暂时无法申请行动', 409);
   if (g.state !== 'act') return bad(res, '已有待处理的申请', 409);
@@ -1117,7 +1174,8 @@ api.post('/field/rooms/:id/say', auth, once, (req, res) => {
   const asGm = !!b.gm && isAdmin(req.user.id); if (!asGm && !r.members[req.user.id]) return bad(res, '你不在该舰上', 403); if (!asGm && ((g.mad || {})[req.user.id] || {}).no === 9) return bad(res, '你无法组织语言', 403); if (!asGm && ((g.mad || {})[req.user.id] || {}).no === 1) return bad(res, '你处于昏迷中，无法 RP', 403); const foamU = !asGm && ((isDead(r, req.user.id) && !!r.w4 && !!(w4Of(r).foam || {})[req.user.id]) || (!!r.main && req.user.dead === 2)); if (!asGm && isDead(r, req.user.id) && !foamU) return bad(res, '你已死亡', 403);
   const to = asGm && b.to && r.members[b.to] ? b.to : '';
   { const lk = (asGm ? 'gm:' : '') + req.user.id, now = Date.now(), ls = (g.lastSay = g.lastSay || {})[lk]; if (ls && ls.text === text && now - ls.t < 8000) return res.json({ room: fieldOut(req.params.id, isAdmin(req.user.id)) }); g.lastSay[lk] = { text, t: now }; }
-  if (asGm) { const as = GM_AS[b.as] ? b.as : 'narr'; gameLog(r, '【' + GM_AS[as] + '】：' + text, 'gm', as, to ? { to } : null); } else gameLog(r, foamU ? text : '【' + memberInfo(r, req.user.id).name + '】：' + text, 'rp', foamU ? 'foam' : !r.fun && !g.free && g.order[g.turn] !== req.user.id ? 'off' : '', r.w5 && !r.w6 && foamU ? { vis: w5VisList(r, req.user.id) } : undefined);
+  const aud = asGm && r.w6 && (b.to === '@out' || b.to === '@alive') ? b.to : '', vis = aud ? Object.keys(r.members).filter(x => (aud === '@out') === !!isDead(r, x)) : null;
+  if (asGm) { const as = GM_AS[b.as] ? b.as : 'narr'; gameLog(r, '【' + GM_AS[as] + '】：' + text, 'gm', as, to ? { to } : vis ? { vis, aud } : null); } else gameLog(r, foamU ? text : '【' + memberInfo(r, req.user.id).name + '】：' + text, 'rp', foamU ? 'foam' : r.w6 ? 'off' : !r.fun && !g.free && g.order[g.turn] !== req.user.id ? 'off' : '', r.w6 && foamU ? { by: req.user.id } : r.w5 && foamU ? { vis: w5VisList(r, req.user.id) } : undefined);
   res.json({ room: fieldOut(req.params.id, isAdmin(req.user.id)) });
 });
 api.post('/field/rooms/:id/funstart', auth, once, (req, res) => {
@@ -1187,6 +1245,7 @@ api.post('/field/rooms/:id/move', auth, once, (req, res) => {
 });
 api.post('/field/rooms/:id/cancel', auth, once, (req, res) => {
   const r = fieldRoom(req.params.id), g = r && r.game; if (!g) return bad(res, '游戏未开始', 409);
+  if (r.w6) { const W = w6Of(r); if (W.reqs.some(q => q.uid === req.user.id && q.st === 'roll')) return bad(res, '调度已在处理，无法撤回', 409); const i = W.reqs.findIndex(q => q.uid === req.user.id && q.st === 'wait'); if (i >= 0) W.reqs.splice(i, 1); mainSave(r); return res.json({ room: fieldOut(req.params.id) }); }
   if (g.state === 'pending' && g.pending && g.pending.uid === req.user.id) { g.pending = null; g.state = 'act'; }
   res.json({ room: fieldOut(req.params.id) });
 });
@@ -1283,7 +1342,7 @@ const gmHandler = (req, res) => {
     const expr = net === 0 ? 'D100=' + roll : (net > 0 ? 'b' : 'p') + Math.abs(net) + '=D100=' + vals[0] + ', [' + (net > 0 ? '奖励骰' : '惩罚骰') + ':' + ts.slice(1).join(',') + '] = ' + roll;
     const RK = { '大失败': 0, '失败': 1, '常规成功': 2, '困难成功': 3, '极难成功': 4, '大成功': 5 }, met = RK[lv] >= { '常规': 2, '困难': 3, '极难': 4 }[need];
     gameLog(r, (b.hide ? '〔暗投〕' : '') + '【' + nm + '】进行【' + label + '】检定 · 需要等级=' + need + '\n' + expr + '/' + val + ' ' + lv + (need !== '常规' ? (met ? '（达成）' : '（未达成）') : ''), 'roll', met ? lv : lv === '大失败' ? '大失败' : '未达成', b.hide ? { hide: true } : null);
-    if (lv === '大失败' && !b.hide) mSet(r, b.uid, 'er', Math.min(100, (+i.er || 0) + 20));
+    if (lv === '大失败' && !b.hide && !r.w6) mSet(r, b.uid, 'er', Math.min(100, (+i.er || 0) + 20));
   }
   else if (b.op === 'dog') {
     if (r.main || r.w4) return bad(res, '主舰没有机器狗');
@@ -1574,6 +1633,151 @@ function w5AdminOp(r, b) { const W = w4Of(r), now = Date.now(), uid = String(b.u
   if (b.op === 'nav') { const NV = W.nav = W.nav || {}, fx = r.game.fx = r.game.fx || {}; if (b.a === 'warn') { NV.warn = now + 180e3; fx.alarm = true; gameLog(r, '【广播】：' + w5T('navWarn'), 'gm', 'bc'); } else if (b.a === 'hit') w5NavHit(r); else if (b.a === 'reset') { NV.warn = 0; NV.last = NV.l0 = NV.l1 = now; fx.alarm = false; } else if (b.a === 'gap') { const v = +b.v; if (![1, 5, 15].includes(v)) throw new Error('无效间隔'); NV.gap = v; } else if (b.a === 'tog') { NV.on = NV.on === false; if (NV.on) NV.last = NV.l0 = NV.l1 = now; else { NV.warn = 0; fx.alarm = false; } } else throw new Error('无效操作'); return true; }
   if (b.op === 'mx') { if (b.a === 'open') { W.mxOpen = !W.mxOpen; if (W.mxOpen) gameLog(r, w5T('mxOpen'), 'sys'); return true; } const PR = W5PAIRS.find(p => p.rep === b.rep); if (!PR) throw new Error('无效舱段'); const M = w5MxSt(W, PR.rep); if (b.a === 'unlock') { M.fixU = true; M.sigU = true; } else if (b.a === 'skip') w5MxDone(r, PR, '调度'); else if (b.a === 'reset') { delete W.mx[PR.rep]; w5MxSt(W, PR.rep); } else throw new Error('无效操作'); return true; }
   return false; }
+// WEEK6 · 调度申请：不分回合，玩家随时提交（技能 + RP，每人同时只能有一条待处理），任一在线调度批准 / 驳回；批准后 RP、检定、调度回复进公屏，回复同时进私信
+api.post('/field/rooms/:id/w6r', auth, admin, once, (req, res) => {
+  const r = fieldRoom(req.params.id), g = r && r.game, me = req.user.id, b = req.body || {}; if (!g || !r.w6) return bad(res, '无效舰船', 404);
+  const W = w6Of(r), q = W.reqs.find(x => x.id === +b.rid); if (!q) return bad(res, '申请不存在', 404);
+  if (q.st !== 'wait') return bad(res, '该申请已由【' + (q.byName || '调度') + '】处理', 409);
+  const tag = dispLabel(me) || me; Object.assign(q, { by: me, byName: tag, as: W6_TAG[me] || 'narr', at: Date.now() });
+  if (!b.ok) { const reply = str(b.reply, 300); q.st = 'no'; q.reply = reply; gameLog(r, '〔' + tag + '〕驳回了【' + q.name + '】的申请', 'deny', '', { hide: true }); if (reply) w6Dm(r, q.uid, me, reply, q.id); mainSave(r); return res.json({ room: fieldOut(req.params.id, true) }); }
+  q.st = 'roll';
+  if (q.kind === 'skill') { const R = w6Roll(q.val, b); q.need = R.need; q.res = R.expr + '/' + q.val + ' ' + R.lv + R.tail; q.lv = R.met ? R.lv : R.lv === '大失败' ? '大失败' : '未达成'; q.crit = R.lv === '大失败'; }
+  mainSave(r); res.json({ room: fieldOut(req.params.id, true) });
+});
+api.post('/field/rooms/:id/w6s', auth, admin, once, (req, res) => {
+  const r = fieldRoom(req.params.id), g = r && r.game, me = req.user.id, b = req.body || {}; if (!g || !r.w6) return bad(res, '无效舰船', 404);
+  const W = w6Of(r), q = W.reqs.find(x => x.id === +b.rid); if (!q) return bad(res, '申请不存在', 404);
+  if (q.st !== 'roll') return bad(res, q.st === 'ok' ? '该结果已发送' : '该申请还没有掷骰', 409);
+  const reply = str(b.reply, 300), on = q.target ? '对【' + q.target + '】' : ''; if (!reply) return bad(res, '请为检定结果写 RP');
+  Object.assign(q, { st: 'ok', reply, sentBy: me, sentAt: Date.now() });
+  gameLog(r, '【' + q.name + '】：' + q.text, 'rp', 'act');
+  if (q.kind === 'skill') { gameLog(r, '【' + q.name + '】' + on + (q.item ? '借助【' + q.item + '】' : '') + '进行【' + q.label + '】检定' + (q.need && q.need !== '常规' ? ' · 需要等级=' + q.need : '') + '\n' + q.res, 'roll', q.lv); if (q.crit) w6Crit(r, q.uid, '大失败'); }
+  else if (q.target || q.item) gameLog(r, '【' + q.name + '】' + on + (q.item ? '使用了【' + q.item + '】' : '进行了人为干涉'), q.item ? 'item' : 'sys');
+  gameLog(r, '【调度】：' + reply, 'gm', 'narr'); w6Dm(r, q.uid, me, reply, q.id);
+  const part = str(b.part, 30); if (part && q.target === '工作台') { W.part = { name: part, by: q.uid, uname: q.name, t: Date.now() }; const Lp = (g.loot = g.loot || {})[q.uid] = (g.loot || {})[q.uid] || []; Lp.push(part); gameLog(r, '【' + q.name + '】在工作台制作出了【' + part + '】', 'item'); }
+  if (q.label === '导航规划' && ['lab', 'truss'].includes(q.loc) && W.navAt && !W.fuelAt && /成功/.test(q.lv || '')) { W.fuelAt = Date.now(); W.fuelK = 'panel'; W.pshow = { n: ((W.pshow && W.pshow.n) || 0) + 1, t: Date.now() }; }
+  mainSave(r); res.json({ room: fieldOut(req.params.id, true) });
+});
+api.post('/field/rooms/:id/w6f', auth, admin, once, (req, res) => {
+  const r = fieldRoom(req.params.id), g = r && r.game, b = req.body || {}; if (!g || !r.w6) return bad(res, '无效舰船', 404);
+  const W = w6Of(r), k = ['nav', 'fuel', 'stop', 'reset'].includes(b.k) ? b.k : ''; if (!k) return bad(res, '无效演出');
+  if (k === 'reset') { W.navAt = 0; W.fuelAt = 0; W.convOk = 0; W.routeSys = 0; W.routeOk = null; W.rtTry = {}; W.rtN = 0; mainSave(r); return res.json({ room: fieldOut(req.params.id, true) }); } if (k === 'fuel') { W.fuelAt = Date.now(); W.fuelK = 'pop'; } if (k === 'nav') W.navAt = Date.now();
+  W.show = { n: ((W.show && W.show.n) || 0) + 1, k, t: Date.now() }; mainSave(r); res.json({ room: fieldOut(req.params.id, true) });
+});
+api.post('/field/rooms/:id/w6d', auth, once, (req, res) => {
+  const r = fieldRoom(req.params.id), g = r && r.game, me = req.user.id, b = req.body || {}; if (!g || !r.w6) return bad(res, '无效舰船', 404); if (!r.members[me]) return bad(res, '你不在该舰上', 404);
+  if (!(w6Of(r).open || {}).nav) return bad(res, '驾驶面板尚未开放', 409); const loc = baseLoc(getUser(me)); if (!['lab', 'truss'].includes(loc)) return bad(res, '驾驶面板在二级 / 三级总控', 409);
+  const W = w6Of(r), cd = W.dcd = W.dcd || {}, now = Date.now(); if ((cd[me] || 0) > now) return bad(res, '驾驶面板冷却中 · ' + Math.ceil((cd[me] - now) / 1000) + ' 秒', 409);
+  const i = +b.idx, L = SKILL_LABELS.pilot; if (!L || !(i >= 0 && i < 3)) return bad(res, '无效技能');
+  const conv = i === 1 && W.navAt && now - W.navAt > W6_NAVEND && !W.convOk && !W.fuelAt, rsys = i === 1 && W.fuelAt && now - W.fuelAt > 27000 && !W.routeSys, cat = conv || rsys ? 'scan' : 'pilot', si = conv || rsys ? 1 : i, lab = SKILL_LABELS[cat][si];
+  const info = memberInfo(r, me), grp = (info.skills || []).find(x => x.cat === cat), val = grp ? +grp.v[si] : 1, R = w6Roll(val, {}), lv = R.met ? R.lv : R.lv === '大失败' ? '大失败' : '未达成';
+  cd[me] = now + 15000; gameLog(r, '【' + info.name + '】在' + (loc === 'truss' ? '三级总控' : '二级总控') + (conv ? '手动转换坐标系 · ' : rsys ? '分析周围环境 · ' : '') + '进行【' + lab + '】检定\n' + R.expr + '/' + val + ' ' + R.lv, 'roll', lv); w6Crit(r, me, R.lv);
+  if (cat === 'pilot' && /成功/.test(lv)) { const NV = W.nav6 = W.nav6 || {}; if (NV.warn && si === 2) { NV.warn = 0; NV.l0 = NV.l1 = now; const fx = g.fx = g.fx || {}; fx.alarm = false; gameLog(r, w5T('navFix', { 人: info.name }), 'gm', 'bc'); } else if (!NV.warn && si === 0) NV.l0 = now; else if (!NV.warn && si === 1) NV.l1 = now; }
+  if (rsys && /成功/.test(lv)) { W.routeSys = now; gameLog(r, '你们发现由于 ECHO 的运动，PIVOT 已经相对你们很远。预估点已根据你们的计算在手动航线规划中标出。', 'gm', 'narr'); }
+  else if (conv && /成功/.test(lv)) W.convOk = now;
+  else if (i === 1 && W.convOk && !W.fuelAt && /成功/.test(lv)) { W.fuelAt = now; W.fuelK = 'panel'; W.pshow = { n: ((W.pshow && W.pshow.n) || 0) + 1, t: now }; }
+  mainSave(r); res.json({ room: fieldOut(req.params.id) });
+});
+api.post('/field/rooms/:id/w6x', auth, once, (req, res) => {
+  const r = fieldRoom(req.params.id), g = r && r.game, me = req.user.id; if (!g || !r.w6) return bad(res, '无效舰船', 404); if (!r.members[me]) return bad(res, '你不在该舰上', 404); if ((g.dead || {})[me]) return bad(res, '你已死亡', 409);
+  if (!(w6Of(r).open || {}).search) return bad(res, '异常面板尚未开放', 409); const loc = baseLoc(getUser(me)), LIST = W6_SEARCH[loc]; if (!LIST) return bad(res, '该舱段无法搜索', 409);
+  const W = w6Of(r), cd = W.scd = W.scd || {}, now = Date.now(); if ((cd[me] || 0) > now) return bad(res, '搜索冷却中 · ' + Math.ceil((cd[me] - now) / 1000) + ' 秒', 409);
+  const info = memberInfo(r, me), grp = (info.skills || []).find(x => x.cat === 'scan'), val = grp ? +grp.v[2] : 1, R = w6Roll(val, {}), lv = R.met ? R.lv : R.lv === '大失败' ? '大失败' : '未达成', MN = { cockpit: '驾驶兼总控模块', airlock: '气密兼对接模块', rcs: '姿控推进模块', lab: '主实验模块', dock: '实验兼多功能对接模块', farm: '仓储兼种植模块', med: '生活兼医疗模块', hab1: '乘员居住模块 I', hab2: '乘员居住模块 II', truss: '三级总控' };
+  cd[me] = now + 15000; gameLog(r, '【' + info.name + '】在' + MN[loc] + '的异常面板进行【异常识别】检定\n' + R.expr + '/' + val + ' ' + R.lv, 'roll', lv); w6Crit(r, me, R.lv);
+  const POOL = W.pool = W.pool || [], addP = n => { if (!POOL.some(x => x.n === n)) POOL.push({ n, loc, by: me, t: now }); };
+  if (!R.met) { const FL = ['你找到了一些玩偶，不知为何你的手有点痒。', '你找到了一些蛋糕，好像不太能吃。', '你找到了一些瓶瓶罐罐，但是里面的样本已经不见了。', '你找到了一些零件，好像是什么零件爆炸的痕迹，没有被清理。', '你找到了一些猫毛，这个地方真的有猫吗？', '你找到了一些小瓶漱口水，谁放的。', '你找到了一个盆，在健身房里。', '你找到了一件女性职业套装，但是绝对不是你们的制服。']; const fi = crypto.randomInt(0, FL.length); addP(['玩偶', '蛋糕', '空样本瓶', '爆炸零件残片', '猫毛', '小瓶漱口水', '盆', '女性职业套装'][fi]); gameLog(r, FL[fi] + '\n→ 已登记为工作台可用物品', 'sys', '', { to: me }); }
+  const AL = (W.alien || {})[me], TP = W.tape = W.tape || { got: {}, watched: 0 };
+  if (R.met && loc === 'med' && AL && AL.done && !TP.got[me]) { TP.got[me] = now; const L = (g.loot = g.loot || {})[me] = (g.loot || {})[me] || []; L.push('录像带'); (W.recs = W.recs || {})[me] = [...((W.recs || {})[me] || []), { k: 'tape', n: '录像带', loc, t: now }]; gameLog(r, '【' + info.name + '】在' + MN[loc] + '里识别到了异常 · 找到了【录像带】', 'item'); mainSave(r); return res.json({ room: fieldOut(req.params.id) }); }
+  if (R.met) { const FD = W.found = W.found || {}, mine = (FD[me] = FD[me] || {})[loc] = FD[me][loc] || [], TK = W.taken = W.taken || {}, idx = LIST.map((_, i) => i).find(i => !mine.includes(i) && !(LIST[i].once && TK[loc + ':' + i]));
+    const RES = '采样物质残骸（' + MN[loc] + '）';
+    if (idx == null && !POOL.some(x => x.n === RES)) { addP(RES); gameLog(r, '你在' + MN[loc] + '里识别到了异常 · 发现了剩余的采样物质残骸\n→ 已登记为工作台可用物品', 'item', '', { to: me }); }
+    else if (idx == null) gameLog(r, '你在' + MN[loc] + '里没有识别到新的异常。', 'sys', '', { to: me });
+    else { const it = LIST[idx], L = (g.loot = g.loot || {})[me] = (g.loot || {})[me] || []; if (L.length >= lootCap(me, r)) { gameLog(r, '你发现了【' + it.n + '】，但外勤背包已满。', 'sys', '', { to: me }); } else { mine.push(idx); if (it.once) TK[loc + ':' + idx] = me; L.push(it.n); gameLog(r, '你在' + MN[loc] + '里发现了【' + it.n + '】' + (it.d ? '：' + it.d : '') + ' → 已放入外勤背包', 'item', '', { to: me }); } } }
+  mainSave(r); res.json({ room: fieldOut(req.params.id) });
+});
+api.post('/field/rooms/:id/w6v', auth, once, (req, res) => {
+  const r = fieldRoom(req.params.id), g = r && r.game, me = req.user.id; if (!g || !r.w6) return bad(res, '无效舰船', 404); const W = w6Of(r);
+  if (!(((W.recs || {})[me]) || []).some(x => x.k === 'tape')) return bad(res, '没有这条记录', 404);
+  gameLog(r, '【' + memberInfo(r, me).name + '】播放了【录像带】\n\n' + W6_TAPE, 'sys'); const TP = W.tape = W.tape || { got: {}, watched: 0 }; if (!TP.watched) TP.watched = Date.now(); (TP.seen = TP.seen || {})[me] = Date.now();
+  mainSave(r); res.json({ room: fieldOut(req.params.id) });
+});
+const W6RT_SCORE = x => x.hit ? x.tb : 1e6 + x.best;
+api.post('/field/rooms/:id/w6t', auth, once, (req, res) => {
+  const r = fieldRoom(req.params.id), g = r && r.game, me = req.user.id, b = req.body || {}; if (!g || !r.w6) return bad(res, '无效舰船', 404); if (!r.members[me]) return bad(res, '你不在该舰上', 404);
+  const W = w6Of(r); if (!W.routeSys || !(W.open || {}).route) return bad(res, '手动航线规划尚未开放', 409);
+  const phi = Math.round(+b.phi) || 0, rp = Math.round((+b.rp || 2) * 10) / 10, dv = Math.round((+b.dv || 0) * 100) / 100, thr = Math.round(+b.thr); if (!(phi >= 0 && phi < 360 && rp >= 1.2 && rp <= 2 && dv >= 0 && dv <= W6RT.DV && thr >= 0 && thr <= 100)) return bad(res, '无效参数');
+  const R = w6RtSim(phi, rp, dv, thr), x = { uid: me, name: memberInfo(r, me).name, t: Date.now(), phi, rp, dv, thr, used: Math.round(R.used * 100) / 100, best: Math.round(R.best * 100) / 100, tb: Math.round(R.tb * 10) / 10, vb: Math.round(R.vb * 100) / 100, hit: R.hit, crash: R.crash, bound: R.bound };
+  const T = W.rtTry = W.rtTry || {}; W.rtN = (W.rtN || 0) + 1; if (!T[me] || W6RT_SCORE(x) < W6RT_SCORE(T[me])) T[me] = x;
+  mainSave(r); res.json({ room: fieldOut(req.params.id) });
+});
+api.post('/field/rooms/:id/w6tl', auth, admin, once, (req, res) => {
+  const r = fieldRoom(req.params.id), g = r && r.game, b = req.body || {}; if (!g || !r.w6) return bad(res, '无效舰船', 404); const W = w6Of(r), x = (W.rtTry || {})[String(b.uid || '')];
+  if (b.off) { W.routeOk = null; mainSave(r); return res.json({ room: fieldOut(req.params.id, true) }); } if (!x) return bad(res, '没有这条记录', 404);
+  W.routeOk = { ...x, by: x.uid }; gameLog(r, '航线已锁定至 PIVOT—07 预估点（' + x.name + ' · 相位 ' + x.phi + '° · 近点 ' + x.rp.toFixed(1) + 'R · Δv ' + x.used.toFixed(2) + ' km/s · 预计 ' + x.tb + ' 小时后抵达 · 相对速度 ' + x.vb.toFixed(2) + ' km/s）', 'gm', 'narr');
+  mainSave(r); res.json({ room: fieldOut(req.params.id, true) });
+});
+api.post('/field/rooms/:id/w6c', auth, once, (req, res) => {
+  const r = fieldRoom(req.params.id), g = r && r.game, me = req.user.id, b = req.body || {}; if (!g || !r.w6) return bad(res, '无效舰船', 404); if (!r.members[me] || isDead(r, me)) return bad(res, '你无法解读', 403);
+  const L = (g.all || g.log).find(x => x.id === +b.id && x.kind === 'rp' && x.lv === 'foam'); if (!L) return bad(res, '没有这段乱码', 404); if (L.by === me) return bad(res, '这是你自己的话', 409);
+  const W = w6Of(r), D = (W.dec = W.dec || {})[me] = (W.dec || {})[me] || []; if (D.includes(L.id)) return res.json({ room: fieldOut(req.params.id) });
+  const cd = W.ccd = W.ccd || {}, now = Date.now(); if ((cd[me] || 0) > now) return bad(res, '冷却中 · ' + Math.ceil((cd[me] - now) / 1000) + ' 秒', 409); cd[me] = now + 8000;
+  const info = memberInfo(r, me), grp = (info.skills || []).find(x => x.cat === 'res'), v = grp ? +grp.v[2] : 1, R = w6Roll(v, {});
+  gameLog(r, '【' + info.name + '】对一段乱码进行【' + SKILL_LABELS.res[2] + '】检定\n' + R.expr + '/' + v + ' ' + R.lv, 'roll', R.met ? R.lv : R.lv === '大失败' ? '大失败' : '未达成', { to: me }); w6Crit(r, me, R.lv);
+  if (R.met) { D.push(L.id); gameLog(r, '你好像理解了【' + (L.by ? memberInfo(r, L.by).name : '？？？') + '】的动作，好像在说：“' + L.text + '”', 'sys', '', { to: me, w6f: 1 }); } else gameLog(r, '那段乱码依旧无法理解。', 'sys', '', { to: me });
+  mainSave(r); res.json({ room: fieldOut(req.params.id) });
+});
+api.post('/field/rooms/:id/w6o', auth, admin, once, (req, res) => {
+  const r = fieldRoom(req.params.id), g = r && r.game, b = req.body || {}; if (!g || !r.w6) return bad(res, '无效舰船', 404); const text = str(b.text, 300); if (!text) return bad(res, '内容为空');
+  const vis = Object.keys(r.members).filter(x => isDead(r, x)); if (!vis.length) return bad(res, '当前没有舱外成员', 409);
+  gameLog(r, '【调度 · 舱外】：' + text, 'gm', 'narr', { vis }); mainSave(r); res.json({ room: fieldOut(req.params.id, true) });
+});
+api.post('/field/rooms/:id/w6g', auth, admin, once, (req, res) => {
+  const r = fieldRoom(req.params.id), g = r && r.game, b = req.body || {}; if (!g || !r.w6) return bad(res, '无效舰船', 404); const W = w6Of(r), Q = W.gseq = W.gseq || [null, null, null, null, null, null], i = +b.i; if (!b.reset && !(i >= 0 && i < 6)) return bad(res, '无效位置');
+  if (b.reset) { W.part = null; W.sent = null; mainSave(r); return res.json({ room: fieldOut(req.params.id, true) }); }
+  if (b.send) { if (Q[i] == null) return bad(res, '该位置还没有设定象形文字', 409); const out = Object.keys(r.members).filter(x => isDead(r, x)); if (!out.length) return bad(res, '当前没有舱外成员', 409); out.forEach(x => { W.seq++; const Lx = W.dm[x] = W.dm[x] || []; Lx.push({ id: W.seq, t: Date.now(), by: req.user.id, gm: true, name: dispLabel(req.user.id) || req.user.id, as: W6_TAG[req.user.id] || 'narr', text: '第 ' + (i + 1) + ' 个', glyph: Q[i], rid: 0 }); }); }
+  else Q[i] = b.g == null || b.g === '' ? null : Math.max(0, Math.min(30, Math.round(+b.g)));
+  mainSave(r); res.json({ room: fieldOut(req.params.id, true) });
+});
+api.post('/field/rooms/:id/w6p', auth, once, (req, res) => {
+  const r = fieldRoom(req.params.id), g = r && r.game, me = req.user.id, b = req.body || {}; if (!g || !r.w6) return bad(res, '无效舰船', 404); if (!r.members[me] || isDead(r, me)) return bad(res, '你无法操作', 403);
+  const W = w6Of(r); if (!(W.open || {}).bench) return bad(res, '工作台尚未开放', 409); if (!W.part) return bad(res, '投信装置还没有组装', 409); if (W.sent) return res.json({ room: fieldOut(req.params.id) }); if (baseLoc(getUser(me)) !== 'dock') return bad(res, '投信装置在实验兼多功能对接模块', 409);
+  const cd = W.pcd = W.pcd || {}, now = Date.now(); if ((cd[me] || 0) > now) return bad(res, '装置冷却中 · ' + Math.ceil((cd[me] - now) / 1000) + ' 秒', 409);
+  const A = Array.isArray(b.seq) ? b.seq.slice(0, 6).map(x => Math.round(+x)) : []; if (A.length !== 6 || A.some(x => !(x >= 0 && x <= 30))) return bad(res, '请选满六个符号'); cd[me] = now + 10000;
+  const Q = W.gseq || [], name = memberInfo(r, me).name; (W.ptry = W.ptry || []).push({ uid: me, name, seq: A, t: now });
+  if (Q.length === 6 && Q.every((x, i) => x != null && x === A[i])) { W.sent = { by: me, name, t: now, seq: A }; g.fx = g.fx || {}; g.fx.deep = true; }
+  else gameLog(r, '投信装置没有回应。', 'sys', '', { to: me });
+  mainSave(r); res.json({ room: fieldOut(req.params.id) });
+});
+api.post('/field/rooms/:id/w6nv', auth, admin, once, (req, res) => {
+  const r = fieldRoom(req.params.id), g = r && r.game, b = req.body || {}; if (!g || !r.w6) return bad(res, '无效舰船', 404); const W = w6Of(r), NV = W.nav6 = W.nav6 || {}, now = Date.now(), fx = g.fx = g.fx || {};
+  if (b.a === 'warn') { NV.warn = now + 180e3; fx.alarm = true; gameLog(r, '【广播】：' + w5T('navWarn'), 'gm', 'bc'); } else if (b.a === 'hit') { w5NavHit(r); NV.warn = 0; NV.l0 = NV.l1 = now; } else if (b.a === 'reset') { NV.warn = 0; NV.l0 = NV.l1 = now; fx.alarm = false; } else if (b.a === 'tog') NV.on = NV.on === false; else if (b.a === 'gap' && [5, 10, 15, 20].includes(+b.v)) NV.gap = +b.v;
+  mainSave(r); res.json({ room: fieldOut(req.params.id, true) });
+});
+api.post('/field/rooms/:id/w6op', auth, admin, once, (req, res) => {
+  const r = fieldRoom(req.params.id), g = r && r.game, b = req.body || {}; if (!g || !r.w6) return bad(res, '无效舰船', 404); const W = w6Of(r), O = W.open = W.open || {}, K = ['nav', 'search', 'bench', 'route'];
+  if (b.part === 'all') K.forEach(k => { O[k] = !!b.on; }); else if (K.includes(b.part)) O[b.part] = !!b.on; else return bad(res, '无效部分');
+  mainSave(r); res.json({ room: fieldOut(req.params.id, true) });
+});
+api.post('/field/rooms/:id/w6q', auth, admin, once, (req, res) => {
+  const r = fieldRoom(req.params.id), g = r && r.game, b = req.body || {}; if (!g || !r.w6) return bad(res, '无效舰船', 404);
+  const W = w6Of(r); if (b.on) W.quiz = { id: ((W.quiz && W.quiz.id) || 0) + 1, on: true, t: Date.now(), ans: {}, fin: {} }; else if (W.quiz) W.quiz.on = false;
+  mainSave(r); res.json({ room: fieldOut(req.params.id, true) });
+});
+api.post('/field/rooms/:id/w6a', auth, once, (req, res) => {
+  const r = fieldRoom(req.params.id), g = r && r.game, me = req.user.id, b = req.body || {}; if (!g || !r.w6) return bad(res, '无效舰船', 404);
+  const Q = w6Of(r).quiz; if (!Q || !Q.on) return bad(res, '问卷未开启', 409); if (!r.members[me]) return bad(res, '你不在该舰上', 404);
+  if (b.key) { (Q.key = Q.key || {})[me] = Date.now(); mainSave(r); return res.json({ room: fieldOut(req.params.id) }); }
+  if (b.wish != null) { (Q.wish = Q.wish || {})[me] = str(b.wish, 200); mainSave(r); return res.json({ room: fieldOut(req.params.id) }); }
+  const a = Q.ans[me] = Q.ans[me] || [], i = +b.i; if (i !== a.length || i >= 10) return res.json({ room: fieldOut(req.params.id) });
+  a.push(b.v ? 1 : 0); if (a.length >= 10) Q.fin[me] = Date.now();
+  mainSave(r); res.json({ room: fieldOut(req.params.id) });
+});
+api.post('/field/rooms/:id/w6m', auth, once, (req, res) => {
+  const r = fieldRoom(req.params.id), g = r && r.game, me = req.user.id, b = req.body || {}; if (!g || !r.w6) return bad(res, '无效舰船', 404);
+  const text = str(b.text, 300); if (!text) return bad(res, '内容为空');
+  const adm = isAdmin(me), uid = adm ? String(b.uid || '') : me; if (!r.members[uid]) return bad(res, adm ? '该成员不在舰上' : '你不在该舰上', 404);
+  w6Dm(r, uid, me, text, +b.rid || 0); mainSave(r); res.json({ room: fieldOut(req.params.id, adm) });
+});
 api.post('/field/rooms/:id/w5p', auth, once, (req, res) => {
   const r = fieldRoom(req.params.id), me = req.user.id, b = req.body || {}; if (!r || !r.w5 || r.w6 || !r.game) return bad(res, '无效舰船', 404); if (!r.members[me]) return bad(res, '你不在该舰上', 403); if (isDead(r, me)) return bad(res, '你已死亡', 403);
   const W = w4Of(r), now = Date.now(); if (!W.mxOpen) return bad(res, '维修任务尚未开放', 409); const loc = baseLoc(getUser(me)), PR = W5PAIRS.find(p => p.rep === loc); if (!PR) return bad(res, '维修面板在仓储兼种植 / 姿控推进模块', 409);
