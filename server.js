@@ -189,6 +189,7 @@ app.use((req, res, next) => { try { convertBody(req.body, 0); } catch (e) {} nex
 app.use('/moon', express.static(path.join(__dirname, 'moon'), { maxAge: 0, etag: true, setHeaders: r => r.set('Cache-Control', 'no-cache') }));
 app.use('/orbit', express.static(path.join(__dirname, 'orbit'), { maxAge: 0, etag: true, setHeaders: r => r.set('Cache-Control', 'no-cache') }));
 app.use('/repair', express.static(path.join(__dirname, 'repair'), { maxAge: 0, etag: true, setHeaders: r => r.set('Cache-Control', 'no-cache') }));
+app.use('/ending', express.static(path.join(__dirname, 'ending'), { maxAge: 0, etag: true, setHeaders: r => r.set('Cache-Control', 'no-cache') }));
 app.use('/recruit', express.static(path.join(__dirname, 'recruit'), { maxAge: 0, etag: true, setHeaders: r => r.set('Cache-Control', 'no-cache') }));
 app.use('/sppdb/fonts', express.static(path.join(__dirname, 'fonts'), { immutable: true, maxAge: '365d', index: false }));
 app.use('/sppdb', express.static(path.join(__dirname, 'sppdb'), { maxAge: 0, etag: true, setHeaders: r => r.set('Cache-Control', 'no-cache') }));
