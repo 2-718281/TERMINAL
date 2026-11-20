@@ -1924,7 +1924,7 @@ let duelSaveT = null;
 const duelSave = () => { if (duelSaveT) return; duelSaveT = setTimeout(() => { duelSaveT = null; try { db.prepare('insert or replace into kv(k, v) values(?, ?)').run('duel', JSON.stringify(DUEL)); } catch (e) {} }, 400); };
 const duelDisp = id => isAdmin(id) || !!DISPATCH_NAME[id];
 const duelName = (id, fb) => { const u = getUser(id); return realName(id, (u && u.name) || fb); };
-const duelCardUrl = id => { const r = DUEL.regs[id]; return r && r.card ? '/api/duel/card/' + encodeURIComponent(id) + '?v=' + r.card : ''; };
+const duelCardUrl = id => { const r = DUEL.regs[id]; if (!r || !r.card) return ''; if (r.card.startsWith('/media/')) return r.card; return '/api/duel/card/' + encodeURIComponent(id) + '?v=' + r.card; };
 const duelOut = uid => {
   const v = DuelE.view(DUEL, uid, duelDisp(uid), Date.now(), duelName);
   Object.keys(v.players).forEach(id => { v.players[id].card = duelCardUrl(id); });
@@ -1950,7 +1950,8 @@ api.post('/duel/:act', auth, (req, res) => {
       let card = typeof b.card === 'string' ? b.card : '', fresh = false;
       if (b.mode === 'play') {
         if (card.startsWith('/api/duel/card/') && old && old.card) card = old.card;
-        else if (card) { if (!/^data:image\/(png|jpe?g|webp|gif);base64,/.test(card)) return bad(res, '设卡图片格式不对'); if (card.length > 3e6) return bad(res, '设卡图片太大'); fresh = true; }
+        else if (MEDIA_RE.test(card)) { /* 已由全局中间件存入 media/ */ }
+        else if (card) { if (!DATA_RE.test(card)) return bad(res, '设卡图片格式不对'); if (card.length > 3e6) return bad(res, '设卡图片太大'); fresh = true; }
       }
       DuelE.register(DUEL, id, duelName(id), b.mode, card, b.cheer, b.speech, b.crop);
       if (fresh) { const ver = now.toString(36); db.prepare('insert or replace into kv(k, v) values(?, ?)').run('duelcard:' + id, card); DUEL.regs[id].card = ver; }
