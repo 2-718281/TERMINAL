@@ -190,6 +190,7 @@ app.use('/moon', express.static(path.join(__dirname, 'moon'), { maxAge: 0, etag:
 app.use('/orbit', express.static(path.join(__dirname, 'orbit'), { maxAge: 0, etag: true, setHeaders: r => r.set('Cache-Control', 'no-cache') }));
 app.use('/repair', express.static(path.join(__dirname, 'repair'), { maxAge: 0, etag: true, setHeaders: r => r.set('Cache-Control', 'no-cache') }));
 app.use('/ending', express.static(path.join(__dirname, 'ending'), { maxAge: 0, etag: true, setHeaders: r => r.set('Cache-Control', 'no-cache') }));
+app.use('/duel', express.static(path.join(__dirname, 'duel'), { maxAge: 0, etag: true, setHeaders: r => r.set('Cache-Control', 'no-cache') }));
 app.use('/recruit', express.static(path.join(__dirname, 'recruit'), { maxAge: 0, etag: true, setHeaders: r => r.set('Cache-Control', 'no-cache') }));
 app.use('/sppdb/fonts', express.static(path.join(__dirname, 'fonts'), { immutable: true, maxAge: '365d', index: false }));
 app.use('/sppdb', express.static(path.join(__dirname, 'sppdb'), { maxAge: 0, etag: true, setHeaders: r => r.set('Cache-Control', 'no-cache') }));
@@ -1391,6 +1392,18 @@ api.post('/field/rooms/:id/reset', auth, admin, (req, res) => {
 addCol('users', 'loc', "text default ''");
 addCol('users', 'dead', 'integer default 0');
 db.exec('create table if not exists kv(k text primary key, v text)');
+// ---- 结局：每人只能体验一次（管理员不限）。在结局页做出最终选择时记录 ----
+// 打开结局页即锁定（st: 'open'，中途退出也算用掉机会，需管理员重置）；做出最终选择时补全结局（st: 'done'）
+const END_LBL = { vanish: '消失', normal: '返回', purge: '存活·净化', live: '存活', spA: '特殊 A', spB: '特殊 B', bye: '再见', gone: '消失（撕卡）' };
+const endGet = id => { const r = db.prepare('select v from kv where k = ?').get('ending:' + id); if (!r) return null; try { return JSON.parse(r.v) || {}; } catch (e) { return {}; } };
+const endPut = (id, v) => db.prepare('insert or replace into kv(k, v) values(?, ?)').run('ending:' + id, JSON.stringify(v));
+const endBase = id => { const u = getUser(id) || {}; return { name: realName(id, u.name), dept: u.dept || '', er: Math.round(+u.er || 0), dead: !!u.dead }; };
+api.get('/ending', auth, (req, res) => { const v = endGet(req.user.id); res.json({ done: !!v && !isAdmin(req.user.id), end: (v && v.end) || '' }); });
+api.post('/ending/open', auth, (req, res) => { const id = req.user.id, adm = isAdmin(id); if (!adm && endGet(id)) return bad(res, '你已经体验过结局了，结局只能体验一次', 409); endPut(id, { st: 'open', ...endBase(id), t0: Date.now(), adm }); res.json({ ok: true }); });
+api.post('/ending', auth, (req, res) => { const id = req.user.id, adm = isAdmin(id), v = endGet(id) || {}; if (!adm && (v.st === 'done' || (v.end && !v.st))) return bad(res, '结局只能体验一次', 409);
+  const b = req.body || {}, end = String(b.end || '').slice(0, 16), cur = endBase(id); endPut(id, { ...cur, ...v, st: 'done', end, label: END_LBL[end] || end, exist: b.exist == null ? null : !!b.exist, t0: v.t0 || Date.now(), t: Date.now(), adm }); res.json({ ok: true }); });
+api.get('/ending/all', auth, admin, (req, res) => res.json({ list: db.prepare("select k, v from kv where k like 'ending:%'").all().map(r => { let v = {}; try { v = JSON.parse(r.v) || {}; } catch (e) {} const id = r.k.slice(7); return { id, ...endBase(id), ...v, st: v.st || (v.end ? 'done' : 'open'), label: v.label || END_LBL[v.end] || v.end || '' }; }).sort((a, c) => (c.t || c.t0 || 0) - (a.t || a.t0 || 0)) }));
+api.post('/ending/reset', auth, admin, (req, res) => { const id = String((req.body || {}).id || ''); if (!id) return bad(res, '缺少成员'); db.prepare('delete from kv where k = ?').run('ending:' + id); res.json({ ok: true }); });
 mainLoad();
 const SHIP_MODS = ['cockpit', 'airlock', 'rcs', 'lab', 'dock', 'farm', 'med', 'hab1', 'hab2', 'ring', 'truss', 'gen', 'fuel', 'fusion', 'drive'];
 const SHIP_NOENTRY = ['ring', 'gen', 'fuel', 'fusion', 'drive'];
@@ -1903,6 +1916,56 @@ api.post('/admin/ship', auth, admin, (req, res) => {
   if (b.def && typeof b.def === 'object' && (SHIP_MODS.includes(b.def.id) || b.def.id === 'sc1' || b.def.id === 'sc2')) { const c = defOf(s, b.def.id), cl = x => Math.max(0, Math.min(30, Math.round(+x || 0))); const nx = { p: b.def.p != null ? cl(b.def.p) : c.p, s: b.def.s != null ? cl(b.def.s) : c.s, ana: b.def.ana != null ? !!b.def.ana : c.ana, med: b.def.med != null ? !!b.def.med : c.med }; s.def = { ...(s.def || {}), [b.def.id]: nx }; }
   if (b.imgs && typeof b.imgs === 'object') { s.imgs = { ...(s.imgs || {}) }; for (const k of Object.keys(b.imgs)) { if ((!SHIP_MODS.includes(k) && k !== 'sc1' && k !== 'sc2') || SHIP_NOENTRY.includes(k)) continue; const v = b.imgs[k]; if (!v) delete s.imgs[k]; else if (isImg(v)) s.imgs[k] = saveImg(v); else return bad(res, '图片无效或过大'); } }
   shipSet(s); res.json(shipOut(req.user.id));
+});
+// ---- 决战之巅：投票赛事（状态在内存 + kv 持久化；设卡图单独存 kv，经 /api/duel/card 输出） ----
+const DuelE = require('./duel-engine');
+let DUEL = (() => { try { const r = db.prepare('select v from kv where k = ?').get('duel'); return r ? JSON.parse(r.v) : DuelE.create(); } catch (e) { return DuelE.create(); } })();
+let duelSaveT = null;
+const duelSave = () => { if (duelSaveT) return; duelSaveT = setTimeout(() => { duelSaveT = null; try { db.prepare('insert or replace into kv(k, v) values(?, ?)').run('duel', JSON.stringify(DUEL)); } catch (e) {} }, 400); };
+const duelDisp = id => isAdmin(id) || !!DISPATCH_NAME[id];
+const duelName = (id, fb) => { const u = getUser(id); return realName(id, (u && u.name) || fb); };
+const duelCardUrl = id => { const r = DUEL.regs[id]; return r && r.card ? '/api/duel/card/' + encodeURIComponent(id) + '?v=' + r.card : ''; };
+const duelOut = uid => {
+  const v = DuelE.view(DUEL, uid, duelDisp(uid), Date.now(), duelName);
+  Object.keys(v.players).forEach(id => { v.players[id].card = duelCardUrl(id); });
+  if (v.me.reg && v.me.reg.card) v.me.reg.card = duelCardUrl(uid);
+  if (v.roster) v.roster.forEach(r => { r.card = duelCardUrl(r.id); });
+  return v;
+};
+setInterval(() => { try { if (DuelE.tick(DUEL, Date.now())) duelSave(); } catch (e) {} }, 1000);
+api.get('/duel/card/:id', (req, res) => {
+  const row = db.prepare('select v from kv where k = ?').get('duelcard:' + req.params.id);
+  const m = row && /^data:(image\/[a-z+]+);base64,(.+)$/.exec(row.v);
+  if (!m) return res.status(404).end();
+  res.type(m[1]); res.set('Cache-Control', 'public, max-age=31536000, immutable'); res.send(Buffer.from(m[2], 'base64'));
+});
+api.get('/duel', auth, (req, res) => { if (DuelE.tick(DUEL, Date.now())) duelSave(); res.json(duelOut(req.user.id)); });
+api.post('/duel/:act', auth, (req, res) => {
+  const id = req.user.id, b = req.body || {}, now = Date.now(), act = req.params.act;
+  const need = () => { if (!duelDisp(id)) { const e = new Error('需要调度权限'); e.user = true; throw e; } };
+  try {
+    DuelE.tick(DUEL, now);
+    if (act === 'reg') {
+      const old = DUEL.regs[id];
+      let card = typeof b.card === 'string' ? b.card : '', fresh = false;
+      if (b.mode === 'play') {
+        if (card.startsWith('/api/duel/card/') && old && old.card) card = old.card;
+        else if (card) { if (!/^data:image\/(png|jpe?g|webp|gif);base64,/.test(card)) return bad(res, '设卡图片格式不对'); if (card.length > 3e6) return bad(res, '设卡图片太大'); fresh = true; }
+      }
+      DuelE.register(DUEL, id, duelName(id), b.mode, card, b.cheer, b.speech, b.crop);
+      if (fresh) { const ver = now.toString(36); db.prepare('insert or replace into kv(k, v) values(?, ?)').run('duelcard:' + id, card); DUEL.regs[id].card = ver; }
+    }
+    else if (act === 'unreg') { DuelE.unregister(DUEL, id); db.prepare('delete from kv where k = ?').run('duelcard:' + id); }
+    else if (act === 'vote') DuelE.vote(DUEL, id, b.side, now, b.key);
+    else if (act === 'title') { need(); DuelE.setTitle(DUEL, b.a, b.b); }
+    else if (act === 'start') { need(); DuelE.start(DUEL, now); }
+    else if (act === 'skip') { need(); DuelE.skip(DUEL, now); DuelE.tick(DUEL, now); }
+    else if (act === 'reset') { need(); DuelE.reset(DUEL, true); }
+    else if (act === 'clear') { need(); DuelE.reset(DUEL, false); db.prepare("delete from kv where k like 'duelcard:%'").run(); }
+    else return bad(res, '未知操作', 404);
+  } catch (e) { if (e && e.user) return bad(res, e.message); throw e; }
+  duelSave();
+  res.json(duelOut(id));
 });
 
 app.use('/api', api);
